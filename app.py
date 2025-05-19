@@ -79,6 +79,24 @@ with st.sidebar:
         ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
         index=0
     )
+
+    # Add distance calculation options
+    st.subheader("Distance Calculation")
+    use_graphhopper = st.checkbox("Use GraphHopper for real-world distances", value=True, 
+                               help="If checked, will use GraphHopper API for accurate distances")
+    
+    if use_graphhopper:
+        graphhopper_option = st.radio("GraphHopper API Key", ["Use from secrets.toml", "Enter API Key"], 
+                                  help="Choose where to get the GraphHopper API key")
+        
+        if graphhopper_option == "Enter API Key":
+            graphhopper_api_key = st.text_input("GraphHopper API Key", type="password")
+        else:
+            try:
+                graphhopper_api_key = st.secrets["GRAPHHOPPER_API_KEY"]
+            except:
+                graphhopper_api_key = ""
+                st.warning("No GraphHopper API key found in secrets.toml")
     
     st.subheader("Sample Data")
     if st.button("Load Sample Data"):
@@ -272,28 +290,29 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             # Ensure required columns exist with default values if missing
             st.session_state.df = processor.ensure_required_columns(st.session_state.df)
             
-            # Calculate distance matrix using OSRM
+# Calculate distance matrix
 try:
-    # Add depot to the beginning of locations
+    # Add depot to the beginning of locations if needed
     if depot_option == "Enter depot coordinates manually":
         locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
     else:
         locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
     
-    st.info("Calculating travel distances between locations...")
-    
-    # Check for reasonableness - if too many locations, warn user
-    if len(locations) > 50:
-        st.warning(f"Large number of locations ({len(locations)}) may cause API issues. Consider reducing the dataset size.")
-    
-    distance_matrix, duration_matrix = processor.calculate_distance_matrix(locations)
-    st.session_state.distance_matrix = distance_matrix
-    st.session_state.duration_matrix = duration_matrix
-    st.success("✅ Distance calculation successful")
-    
+    if use_graphhopper and graphhopper_api_key:
+        st.info("Calculating real-world distances using GraphHopper API...")
+        distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
+        st.session_state.distance_matrix = distance_matrix
+        st.session_state.duration_matrix = duration_matrix
+        st.success("✅ GraphHopper distance calculation successful")
+    else:
+        st.info("Using straight-line distances (GraphHopper API not used)...")
+        distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
+        duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
+        st.session_state.distance_matrix = distance_matrix
+        st.session_state.duration_matrix = duration_matrix
 except Exception as e:
-    st.error(f"Error calculating distances: {str(e)}")
-    st.warning("Falling back to straight-line distances (this may affect route optimization quality)...")
+    st.error(f"Error calculating distances: {e}")
+    st.info("Falling back to straight-line distances...")
     
     # Fall back to Euclidean distances
     if depot_option == "Enter depot coordinates manually":
@@ -302,7 +321,7 @@ except Exception as e:
         all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
     
     distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
-    duration_matrix = [[dist * 2 for dist in row] for row in distance_matrix]  # Rough estimate: 30 km/h speed
+    duration_matrix = distance_matrix * 0.12  # Simple time estimation
     st.session_state.distance_matrix = distance_matrix
     st.session_state.duration_matrix = duration_matrix
                 
