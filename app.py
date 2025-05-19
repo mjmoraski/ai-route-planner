@@ -294,7 +294,7 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             try:
                 # Add depot to the beginning of locations if needed
                 if depot_option == "Enter depot coordinates manually":                       
-                locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                    locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
                 else:
                     locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
     
