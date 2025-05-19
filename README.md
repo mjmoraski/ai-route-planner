@@ -86,3 +86,14 @@ Note: The application includes an option to enter your API key directly in the i
 - Uses OpenAI's API to generate natural language explanations
 - Highlights efficiency, customer service benefits, and driver advantages
 
+## GraphHopper API Setup
+This application can use the GraphHopper API for accurate travel distances and times:
+
+1. Sign up for a GraphHopper account and get an API key at [GraphHopper](https://www.graphhopper.com/)
+2. Add your API key to the `.streamlit/secrets.toml` file:
+GRAPHHOPPER_API_KEY = "your-graphhopper-api-key-here"
+3. Replace `your-graphhopper-api-key-here` with your actual GraphHopper API key
+4. Alternatively, you can enter your API key directly in the application interface
+
+Note that GraphHopper has usage limits on their free tier. For more information, see the [GraphHopper pricing page](https://www.graphhopper.com/pricing/).
+
