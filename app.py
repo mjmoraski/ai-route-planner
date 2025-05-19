@@ -273,19 +273,38 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             st.session_state.df = processor.ensure_required_columns(st.session_state.df)
             
             # Calculate distance matrix using OSRM
-            try:
-                # Add depot to the beginning of locations
-                if depot_option == "Enter depot coordinates manually":
-                    locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                else:
-                    locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                
-                distance_matrix, duration_matrix = processor.calculate_distance_matrix(locations)
-                st.session_state.distance_matrix = distance_matrix
-                st.session_state.duration_matrix = duration_matrix
-            except Exception as e:
-                st.error(f"Error calculating distances: {e}")
-                st.info("Falling back to straight-line distances...")
+try:
+    # Add depot to the beginning of locations
+    if depot_option == "Enter depot coordinates manually":
+        locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+    else:
+        locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+    
+    st.info("Calculating travel distances between locations...")
+    
+    # Check for reasonableness - if too many locations, warn user
+    if len(locations) > 50:
+        st.warning(f"Large number of locations ({len(locations)}) may cause API issues. Consider reducing the dataset size.")
+    
+    distance_matrix, duration_matrix = processor.calculate_distance_matrix(locations)
+    st.session_state.distance_matrix = distance_matrix
+    st.session_state.duration_matrix = duration_matrix
+    st.success("✅ Distance calculation successful")
+    
+except Exception as e:
+    st.error(f"Error calculating distances: {str(e)}")
+    st.warning("Falling back to straight-line distances (this may affect route optimization quality)...")
+    
+    # Fall back to Euclidean distances
+    if depot_option == "Enter depot coordinates manually":
+        all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+    else:
+        all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+    
+    distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
+    duration_matrix = [[dist * 2 for dist in row] for row in distance_matrix]  # Rough estimate: 30 km/h speed
+    st.session_state.distance_matrix = distance_matrix
+    st.session_state.duration_matrix = duration_matrix
                 
                 # Fall back to Euclidean distances
                 if depot_option == "Enter depot coordinates manually":
