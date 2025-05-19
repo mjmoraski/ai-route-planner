@@ -325,16 +325,14 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
                 st.session_state.distance_matrix = distance_matrix
                 st.session_state.duration_matrix = duration_matrix
                 
-            # Initialize the route optimizer
-            optimizer = RouteOptimizer(
-                distance_matrix=st.session_state.distance_matrix,
-                duration_matrix=st.session_state.duration_matrix,  # Add this line
-                num_vehicles=num_vehicles,
-                depot=0  # Assuming depot is always the first location
-            )
-            
-            # Set up vehicle capacities
-            optimizer.set_vehicle_capacities(vehicle_capacities)
+                # Initialize the route optimizer
+                optimizer = RouteOptimizer(
+                    distance_matrix=st.session_state.distance_matrix,
+                    duration_matrix=st.session_state.duration_matrix,
+                    num_vehicles=num_vehicles,
+                    depot=0,  # Assuming depot is always the first location
+                    vehicle_capacities=vehicle_capacities  # Pass capacities directly to constructor
+                )
             
             # Prepare time windows if available
             time_windows = []
