@@ -69,6 +69,17 @@ The app uses Google OR-Tools' Vehicle Routing Problem (VRP) solver with:
 
 ### Map Integration
 - Uses OpenStreetMap through the OSRM API
+
+## OpenAI API Setup
+This application requires an OpenAI API key for generating AI route explanations:
+
+1. Sign up for an API key at [OpenAI](https://platform.openai.com/signup)
+2. Create a file at `.streamlit/secrets.toml` with the following content:
+OPENAI_API_KEY = "your-api-key-here"
+3. Replace `your-api-key-here` with your actual OpenAI API key
+4. This file is automatically ignored by Git to protect your secret key
+
+Note: The application includes an option to enter your API key directly in the interface if you prefer not to use the secrets file.
 - Visualizes routes using Folium
 
 ### AI Integration
