@@ -290,57 +290,50 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             # Ensure required columns exist with default values if missing
             st.session_state.df = processor.ensure_required_columns(st.session_state.df)
             
-with st.spinner("Processing data and calculating distances..."):
-    # Handle the case where lat/long might be missing
-    processor = DataProcessor()
-    
-    # If lat/long are missing but address is available, geocode the addresses
-    if ('Latitude' not in st.session_state.df.columns or 'Longitude' not in st.session_state.df.columns) and 'Address' in st.session_state.df.columns:
-        st.info("Geocoding addresses to get coordinates...")
-        df_with_coords = processor.geocode_addresses(st.session_state.df)
-        if df_with_coords is not None:
-            st.session_state.df = df_with_coords
-        else:
-            st.error("Failed to geocode addresses. Please provide a CSV with Latitude and Longitude columns.")
-            st.stop()
-    
-    # Ensure required columns exist with default values if missing
-    st.session_state.df = processor.ensure_required_columns(st.session_state.df)
-    
-    # Calculate distance matrix
-    try:
-        # Add depot to the beginning of locations if needed
-        if depot_option == "Enter depot coordinates manually":
-            locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-        else:
-            locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-        
-        if use_graphhopper and graphhopper_api_key:
-            st.info("Calculating real-world distances using GraphHopper API...")
-            distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
-            st.session_state.distance_matrix = distance_matrix
-            st.session_state.duration_matrix = duration_matrix
-            st.success("✅ GraphHopper distance calculation successful")
-        else:
-            st.info("Using straight-line distances (GraphHopper API not used)...")
-            distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
-            duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
-            st.session_state.distance_matrix = distance_matrix
-            st.session_state.duration_matrix = duration_matrix
-    except Exception as e:
-        st.error(f"Error calculating distances: {e}")
-        st.info("Falling back to straight-line distances...")
-        
-        # Fall back to Euclidean distances
-        if depot_option == "Enter depot coordinates manually":
-            all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-        else:
-            all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-        
-        distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
-        duration_matrix = distance_matrix * 0.12  # Simple time estimation
-        st.session_state.distance_matrix = distance_matrix
-        st.session_state.duration_matrix = duration_matrix
+            # Calculate distance matrix
+            try:
+                # Add depot to the beginning of locations if needed
+                if depot_option == "Enter depot coordinates manually":
+                    locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                else:
+                    locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                
+                if use_graphhopper and graphhopper_api_key:
+                    st.info("Calculating real-world distances using GraphHopper API...")
+                    distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
+                    st.session_state.distance_matrix = distance_matrix
+                    st.session_state.duration_matrix = duration_matrix
+                    st.success("✅ GraphHopper distance calculation successful")
+                else:
+                    st.info("Using straight-line distances (GraphHopper API not used)...")
+                    distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
+                    duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
+                    st.session_state.distance_matrix = distance_matrix
+                    st.session_state.duration_matrix = duration_matrix
+            except Exception as e:
+                st.error(f"Error calculating distances: {e}")
+                st.info("Falling back to straight-line distances...")
+                
+                # Fall back to Euclidean distances
+                if depot_option == "Enter depot coordinates manually":
+                    all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                else:
+                    all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                
+                distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
+                duration_matrix = distance_matrix * 0.12  # Simple time estimation
+                st.session_state.distance_matrix = distance_matrix
+                st.session_state.duration_matrix = duration_matrix
+                
+            # Initialize the route optimizer
+            optimizer = RouteOptimizer(
+                distance_matrix=st.session_state.distance_matrix,
+                num_vehicles=num_vehicles,
+                depot=0  # Assuming depot is always the first location
+            )
+            
+            # Set up vehicle capacities
+            optimizer.set_vehicle_capacities(vehicle_capacities)
             
             # Prepare time windows if available
             time_windows = []
@@ -648,236 +641,3 @@ if st.session_state.optimized_routes:
                 st.dataframe(route_df[display_cols], use_container_width=True)
                 
                 st.info(f"📏 Total Distance: {route_distance/1000:.2f} km  |  ⏱️ Estimated Duration: {cumulative_time:.0f} minutes")
-    
-    with tab2:
-        # Display the interactive map
-        if st.session_state.map_html:
-            # Get routes for detailed display
-            routes_for_map = []
-            for vehicle_id, route in st.session_state.optimized_routes.items():
-                if len(route) > 2:  # Skip empty routes
-                    route_locations = []
-                    for idx in route:
-                        if idx == 0:  # Depot
-                            if depot_option == "Enter depot coordinates manually":
-                                route_locations.append((depot_lat, depot_lon))
-                            else:
-                                route_locations.append((st.session_state.df['Latitude'].iloc[0], st.session_state.df['Longitude'].iloc[0]))
-                        else:
-                            route_locations.append((st.session_state.df['Latitude'].iloc[idx-1], st.session_state.df['Longitude'].iloc[idx-1]))
-                    
-                    routes_for_map.append({
-                        'vehicle_id': vehicle_id,
-                        'locations': route_locations
-                    })
-            
-            # Create a fresh map
-            visualizer = MapVisualizer()
-            map_center = [sum(loc[0] for loc in all_locations) / len(all_locations),
-                          sum(loc[1] for loc in all_locations) / len(all_locations)]
-            
-            route_map = visualizer.create_route_map(
-                st.session_state.optimized_routes,
-                all_locations,
-                df=st.session_state.df
-            )
-            
-            folium_static(route_map, width=800, height=600)
-        else:
-            st.warning("Could not generate map visualization. Try again or check your data.")
-    
-    with tab3:
-        # Display the AI explanation
-        if st.session_state.ai_explanation:
-            st.markdown(st.session_state.ai_explanation)
-        else:
-            st.warning("No AI explanation available. Please run the optimization with a valid OpenAI API key.")
-    
-    with tab4:
-        # Export options
-        st.subheader("Export Options")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Export to CSV
-            if st.button("📄 Export Routes to CSV", use_container_width=True):
-                # Create a DataFrame with all routes
-                export_dfs = []
-                
-                for vehicle_id, route in st.session_state.optimized_routes.items():
-                    if len(route) <= 2:  # Skip empty routes
-                        continue
-                        
-                    # Create a route dataframe
-                    route_export = []
-                    
-                    for i, location_idx in enumerate(route):
-                        if location_idx == 0:  # Depot
-                            if i == 0:  # Starting at depot
-                                route_export.append({
-                                    'Vehicle': f"Vehicle {vehicle_id + 1}",
-                                    'Stop': 0,
-                                    'Type': 'Depot Start',
-                                    'ID': 'DEPOT',
-                                    'Name': 'Depot',
-                                    'Address': 'Depot Location',
-                                    'Latitude': depot_lat if depot_option == "Enter depot coordinates manually" else st.session_state.df['Latitude'].iloc[0],
-                                    'Longitude': depot_lon if depot_option == "Enter depot coordinates manually" else st.session_state.df['Longitude'].iloc[0]
-                                })
-                            else:  # Returning to depot
-                                route_export.append({
-                                    'Vehicle': f"Vehicle {vehicle_id + 1}",
-                                    'Stop': i,
-                                    'Type': 'Depot Return',
-                                    'ID': 'DEPOT',
-                                    'Name': 'Depot',
-                                    'Address': 'Depot Location',
-                                    'Latitude': depot_lat if depot_option == "Enter depot coordinates manually" else st.session_state.df['Latitude'].iloc[0],
-                                    'Longitude': depot_lon if depot_option == "Enter depot coordinates manually" else st.session_state.df['Longitude'].iloc[0]
-                                })
-                        else:
-                            # Regular stop
-                            stop_idx = location_idx - 1  # Adjust for depot offset
-                            row = st.session_state.df.iloc[stop_idx]
-                            
-                            stop_info = {
-                                'Vehicle': f"Vehicle {vehicle_id + 1}",
-                                'Stop': i,
-                                'Type': 'Delivery',
-                                'ID': row['ID'],
-                                'Name': row['Name'],
-                                'Address': row.get('Address', 'N/A'),
-                                'Latitude': row['Latitude'],
-                                'Longitude': row['Longitude']
-                            }
-                            
-                            # Add optional fields if available
-                            for field in ['Priority', 'Time Window Start', 'Time Window End', 'Service Time (min)', 'Package Size']:
-                                if field in row:
-                                    stop_info[field] = row[field]
-                            
-                            route_export.append(stop_info)
-                    
-                    export_dfs.append(pd.DataFrame(route_export))
-                
-                # Combine all routes
-                if export_dfs:
-                    all_routes_df = pd.concat(export_dfs, ignore_index=True)
-                    
-                    # Convert to CSV
-                    csv = all_routes_df.to_csv(index=False)
-                    
-                    # Create download link
-                    b64 = base64.b64encode(csv.encode()).decode()
-                    href = f'<a href="data:file/csv;base64,{b64}" download="optimized_routes.csv">Download CSV</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-                    st.success("CSV ready for download!")
-                else:
-                    st.error("No routes to export!")
-        
-        with col2:
-            # Generate PDF report
-            if st.button("📊 Generate Driver Reports (PDF)", use_container_width=True):
-                with st.spinner("Generating PDF reports..."):
-                    # Create a BytesIO object for the PDF
-                    pdf_buffer = io.BytesIO()
-                    
-                    # Create a PDF document
-                    class PDF(FPDF):
-                        def header(self):
-                            self.set_font('Arial', 'B', 15)
-                            self.cell(0, 10, 'Route Plan - Driver Report', 0, 1, 'C')
-                            self.ln(5)
-                        
-                        def footer(self):
-                            self.set_y(-15)
-                            self.set_font('Arial', 'I', 8)
-                            self.cell(0, 10, f'Page {self.page_no()}', 0, 0, 'C')
-                    
-                    # Create a PDF for each route
-                    for vehicle_id, route in st.session_state.optimized_routes.items():
-                        if len(route) <= 2:  # Skip empty routes
-                            continue
-                            
-                        pdf = PDF()
-                        pdf.add_page()
-                        
-                        # Add title and date
-                        pdf.set_font('Arial', 'B', 16)
-                        pdf.cell(0, 10, f"Route Plan - Vehicle {vehicle_id + 1}", ln=True)
-                        pdf.set_font('Arial', '', 12)
-                        pdf.cell(0, 10, f"Date: {datetime.now().strftime('%Y-%m-%d')}", ln=True)
-                        
-                        # Add route summary
-                        route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-                        pdf.set_font('Arial', 'B', 12)
-                        pdf.cell(0, 10, "Route Summary:", ln=True)
-                        pdf.set_font('Arial', '', 12)
-                        pdf.cell(0, 10, f"Number of Stops: {len(route) - 2}", ln=True)
-                        pdf.cell(0, 10, f"Total Distance: {route_distance/1000:.2f} km", ln=True)
-                        pdf.cell(0, 10, f"Estimated Duration: {sum(st.session_state.duration_matrix[route[i]][route[i+1]] for i in range(len(route)-1)) / 60:.0f} minutes", ln=True)
-                        
-                        # Add stops table
-                        pdf.ln(10)
-                        pdf.set_font('Arial', 'B', 12)
-                        pdf.cell(0, 10, "Delivery Sequence:", ln=True)
-                        
-                        # Table header
-                        pdf.set_font('Arial', 'B', 10)
-                        pdf.cell(15, 10, "Stop", 1)
-                        pdf.cell(60, 10, "Customer", 1)
-                        pdf.cell(75, 10, "Address", 1)
-                        pdf.cell(40, 10, "Time Window", 1)
-                        pdf.ln()
-                        
-                        # Table content
-                        pdf.set_font('Arial', '', 10)
-                        
-                        # Start at depot
-                        pdf.cell(15, 10, "0", 1)
-                        pdf.cell(60, 10, "DEPOT", 1)
-                        pdf.cell(75, 10, "Depot Location", 1)
-                        pdf.cell(40, 10, "Start", 1)
-                        pdf.ln()
-                        
-                        # Add each stop
-                        for i, location_idx in enumerate(route[1:-1], 1):
-                            stop_idx = location_idx - 1  # Adjust for depot offset
-                            row = st.session_state.df.iloc[stop_idx]
-                            
-                            customer_name = row['Name']
-                            address = row.get('Address', 'N/A')
-                            
-                            time_window = "Any time"
-                            if all(col in row for col in ['Time Window Start', 'Time Window End']):
-                                time_window = f"{row['Time Window Start']} - {row['Time Window End']}"
-                            
-                            pdf.cell(15, 10, str(i), 1)
-                            pdf.cell(60, 10, customer_name, 1)
-                            pdf.cell(75, 10, address[:35] + "..." if len(address) > 35 else address, 1)
-                            pdf.cell(40, 10, time_window, 1)
-                            pdf.ln()
-                        
-                        # End at depot
-                        pdf.cell(15, 10, str(len(route)-1), 1)
-                        pdf.cell(60, 10, "DEPOT", 1)
-                        pdf.cell(75, 10, "Depot Location", 1)
-                        pdf.cell(40, 10, "End", 1)
-                        pdf.ln(20)
-                        
-                        # Add notes section
-                        pdf.set_font('Arial', 'B', 12)
-                        pdf.cell(0, 10, "Notes:", ln=True)
-                        pdf.set_font('Arial', '', 10)
-                        pdf.multi_cell(0, 10, "Use this space for any additional information or special instructions for the driver.")
-                        
-                        # Add the PDF to the buffer
-                        pdf_buffer.write(pdf.output(dest='S').encode('latin1'))
-                    
-                    # Create download link
-                    b64 = base64.b64encode(pdf_buffer.getvalue()).decode()
-                    href = f'<a href="data:application/pdf;base64,{b64}" download="driver_reports.pdf">Download PDF Reports</a>'
-                    st.markdown(href, unsafe_allow_html=True)
-                    st.success("PDF reports ready for download!")
-          
