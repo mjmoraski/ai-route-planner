@@ -293,13 +293,13 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             # Calculate distance matrix
             try:
                 # Add depot to the beginning of locations if needed
-                if depot_option == "Enter depot coordinates manually":
-                    locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                if depot_option == "Enter depot coordinates manually":                       
+                locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
                 else:
                     locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                
+    
                 if use_graphhopper and graphhopper_api_key:
-                    st.info("Calculating real-world distances using GraphHopper API...")
+                    st.info("Calculating real-world distances using GraphHopper API...")     
                     distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
                     st.session_state.distance_matrix = distance_matrix
                     st.session_state.duration_matrix = duration_matrix
@@ -313,26 +313,26 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             except Exception as e:
                 st.error(f"Error calculating distances: {e}")
                 st.info("Falling back to straight-line distances...")
-                
+            
                 # Fall back to Euclidean distances
                 if depot_option == "Enter depot coordinates manually":
                     all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
                 else:
                     all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                
+    
                 distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
                 duration_matrix = distance_matrix * 0.12  # Simple time estimation
                 st.session_state.distance_matrix = distance_matrix
                 st.session_state.duration_matrix = duration_matrix
-                
-                # Initialize the route optimizer
-                optimizer = RouteOptimizer(
-                    distance_matrix=st.session_state.distance_matrix,
-                    duration_matrix=st.session_state.duration_matrix,
-                    num_vehicles=num_vehicles,
-                    depot=0,  # Assuming depot is always the first location
-                    vehicle_capacities=vehicle_capacities  # Pass capacities directly to constructor
-                )
+
+            # Initialize the route optimizer - MOVED OUTSIDE OF TRY/EXCEPT BLOCKS
+            optimizer = RouteOptimizer(
+            distance_matrix=st.session_state.distance_matrix,
+                duration_matrix=st.session_state.duration_matrix,
+                num_vehicles=num_vehicles,
+                depot=0,  # Assuming depot is always the first location
+                vehicle_capacities=vehicle_capacities  # Pass capacities directly to constructor
+            )
             
             # Prepare time windows if available
             time_windows = []
