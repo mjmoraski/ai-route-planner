@@ -328,6 +328,7 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             # Initialize the route optimizer
             optimizer = RouteOptimizer(
                 distance_matrix=st.session_state.distance_matrix,
+                duration_matrix=st.session_state.duration_matrix,  # Add this line
                 num_vehicles=num_vehicles,
                 depot=0  # Assuming depot is always the first location
             )
