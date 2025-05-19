@@ -648,8 +648,7 @@ if st.session_state.optimized_routes:
                 df=st.session_state.df
             )
             
-            folium_static(route_map,
-                          folium_static(route_map, width=800, height=600)
+            folium_static(route_map, width=800, height=600)
         else:
             st.warning("Could not generate map visualization. Try again or check your data.")
     
