@@ -1,116 +1,204 @@
-def calculate_graphhopper_distance_matrix(self, locations, api_key):
-    """
-    Calculate distance and duration matrices using GraphHopper API.
+class DataProcessor:
+    """Class for processing delivery data."""
     
-    Args:
-        locations: List of (lat, lon) tuples
-        api_key: GraphHopper API key
+    def __init__(self):
+        """Initialize the data processor."""
+        import pandas as pd
+        import numpy as np
+        import requests
         
-    Returns:
-        Tuple of (distance_matrix, duration_matrix)
-    """
-    import numpy as np
-    import json
-    import time
+        self.requests = requests
     
-    # Initialize matrices
-    n = len(locations)
-    distance_matrix = np.zeros((n, n))
-    duration_matrix = np.zeros((n, n))
-    
-    if not api_key:
-        print("No GraphHopper API key provided, falling back to Euclidean distances")
-        return self.calculate_euclidean_distance_matrix(locations), self.calculate_euclidean_distance_matrix(locations) * 0.12
-    
-    # GraphHopper has a limit on the number of points in a single request
-    # Free tier typically allows 10x10 matrix (100 elements) per request
-    MAX_LOCATIONS_PER_REQUEST = 10
-    
-    # Process the distance matrix in batches
-    for i in range(0, n, MAX_LOCATIONS_PER_REQUEST):
-        i_end = min(i + MAX_LOCATIONS_PER_REQUEST, n)
+    def ensure_required_columns(self, df):
+        """
+        Ensure that the DataFrame has all required columns.
         
-        for j in range(0, n, MAX_LOCATIONS_PER_REQUEST):
-            j_end = min(j + MAX_LOCATIONS_PER_REQUEST, n)
+        Args:
+            df: pandas DataFrame with delivery data
             
-            # Skip if i == j (diagonal blocks)
-            if i == j:
-                # For diagonal elements (same location), set distance and time to 0
-                for k in range(i, i_end):
-                    distance_matrix[k, k] = 0
-                    duration_matrix[k, k] = 0
+        Returns:
+            DataFrame with all required columns (filled with defaults if missing)
+        """
+        import pandas as pd
+        
+        # Create a copy to avoid modifying the original
+        df_copy = df.copy()
+        
+        # Add ID column if missing
+        if 'ID' not in df_copy.columns:
+            df_copy['ID'] = range(1, len(df_copy) + 1)
+        
+        # Add Name column if missing
+        if 'Name' not in df_copy.columns:
+            df_copy['Name'] = [f"Customer {i}" for i in range(1, len(df_copy) + 1)]
+        
+        # Add Time Window columns if missing
+        if 'Time Window Start' not in df_copy.columns:
+            df_copy['Time Window Start'] = '08:00'
+        
+        if 'Time Window End' not in df_copy.columns:
+            df_copy['Time Window End'] = '18:00'
+        
+        # Add Service Time column if missing
+        if 'Service Time (min)' not in df_copy.columns:
+            df_copy['Service Time (min)'] = 15
+        
+        # Add Priority column if missing
+        if 'Priority' not in df_copy.columns:
+            df_copy['Priority'] = 'Medium'
+        
+        # Add Package Size column if missing
+        if 'Package Size' not in df_copy.columns:
+            df_copy['Package Size'] = 'Medium'
+        
+        return df_copy
+    
+    def geocode_addresses(self, df):
+        """
+        Geocode addresses to get latitude and longitude.
+        
+        Args:
+            df: pandas DataFrame with Address column
+            
+        Returns:
+            DataFrame with added Latitude and Longitude columns
+        """
+        import pandas as pd
+        import time
+        
+        # Check if Address column exists
+        if 'Address' not in df.columns:
+            return None
+        
+        # Create a copy to avoid modifying the original
+        df_copy = df.copy()
+        
+        # Initialize latitude and longitude columns
+        df_copy['Latitude'] = None
+        df_copy['Longitude'] = None
+        
+        # Use Nominatim API for geocoding
+        base_url = "https://nominatim.openstreetmap.org/search"
+        
+        for idx, row in df_copy.iterrows():
+            if pd.isna(row['Address']) or not row['Address']:
                 continue
-            
-            # Prepare points for this batch
-            from_points = locations[i:i_end]
-            to_points = locations[j:j_end]
-            
-            # Format points for GraphHopper API
-            from_points_json = [{"lat": lat, "lng": lon} for lat, lon in from_points]
-            to_points_json = [{"lat": lat, "lng": lon} for lat, lon in to_points]
-            
-            # Prepare the request
-            url = "https://graphhopper.com/api/1/matrix"
+                
             params = {
-                "key": api_key,
-                "out_arrays": ["distances", "times"],
-                "vehicle": "car"
-            }
-            
-            payload = {
-                "from_points": from_points_json,
-                "to_points": to_points_json,
-                "fail_fast": False
+                'q': row['Address'],
+                'format': 'json',
+                'limit': 1
             }
             
             try:
-                # Make the API request
-                response = self.requests.post(url, params=params, json=payload, timeout=30)
+                # Add a delay to respect API usage limits
+                time.sleep(1)
                 
-                # Handle rate limiting
-                if response.status_code == 429:
-                    print("Rate limited by GraphHopper API, waiting before retry...")
-                    time.sleep(2)  # Wait before retrying
-                    response = self.requests.post(url, params=params, json=payload, timeout=30)
+                response = self.requests.get(base_url, params=params, headers={'User-Agent': 'AI-Route-Planner/1.0'})
+                response.raise_for_status()
                 
-                # Check for successful response
-                if response.status_code == 200:
-                    data = response.json()
-                    
-                    # Extract matrices
-                    if 'distances' in data and 'times' in data:
-                        batch_distances = np.array(data['distances'])
-                        batch_times = np.array(data['times'])
-                        
-                        # Fill the corresponding part of the full matrices
-                        for k_from, k_global_from in enumerate(range(i, i_end)):
-                            for k_to, k_global_to in enumerate(range(j, j_end)):
-                                distance_matrix[k_global_from, k_global_to] = batch_distances[k_from][k_to]
-                                duration_matrix[k_global_from, k_global_to] = batch_times[k_from][k_to]
-                    else:
-                        print(f"Unexpected GraphHopper API response format: {data}")
-                        # Fill with Euclidean distances for this batch
-                        self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
-                else:
-                    print(f"GraphHopper API error: {response.status_code} - {response.text}")
-                    # Fill with Euclidean distances for this batch
-                    self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+                data = response.json()
                 
-                # Add a small delay to avoid hitting rate limits
-                time.sleep(0.5)
-                
+                if data:
+                    df_copy.at[idx, 'Latitude'] = float(data[0]['lat'])
+                    df_copy.at[idx, 'Longitude'] = float(data[0]['lon'])
             except Exception as e:
-                print(f"Error calculating distances with GraphHopper: {e}")
-                # Fill with Euclidean distances for this batch
-                self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+                print(f"Error geocoding address {row['Address']}: {e}")
+        
+        # Check if we got any results
+        if df_copy['Latitude'].notna().sum() == 0:
+            return None
+            
+        # Fill missing values with estimates
+        if df_copy['Latitude'].isna().any():
+            # Get the average of the available coordinates
+            avg_lat = df_copy['Latitude'].dropna().mean()
+            avg_lon = df_copy['Longitude'].dropna().mean()
+            
+            # Fill missing values with slightly perturbed averages
+            import numpy as np
+            for idx, row in df_copy[df_copy['Latitude'].isna()].iterrows():
+                df_copy.at[idx, 'Latitude'] = avg_lat + np.random.normal(0, 0.01)
+                df_copy.at[idx, 'Longitude'] = avg_lon + np.random.normal(0, 0.01)
+        
+        return df_copy
     
-    return distance_matrix, duration_matrix
-
-def _fill_block_with_euclidean(self, distance_matrix, duration_matrix, locations, from_indices, to_indices):
-    """Helper method to fill a block with Euclidean distances when API fails."""
-    for i in from_indices:
-        for j in to_indices:
-            if i != j:  # Skip diagonals
+    def calculate_distance_matrix(self, locations):
+        """
+        Calculate distance and duration matrices using OSRM API.
+        
+        Args:
+            locations: List of (lat, lon) tuples
+            
+        Returns:
+            Tuple of (distance_matrix, duration_matrix)
+        """
+        import numpy as np
+        import requests
+        import time
+        
+        # Initialize matrices
+        n = len(locations)
+        distance_matrix = np.zeros((n, n))
+        duration_matrix = np.zeros((n, n))
+        
+        # OSRM API base URL (using the demo server)
+        base_url = "https://router.project-osrm.org/table/v1/driving/"
+        
+        # Need to format locations as lon,lat (OSRM uses this order)
+        locations_str = ";".join([f"{lon},{lat}" for lat, lon in locations])
+        
+        # Add parameters
+        params = "?annotations=distance,duration"
+        
+        # Build the complete URL
+        url = base_url + locations_str + params
+        
+        try:
+            # Make the API request
+            response = requests.get(url, headers={'User-Agent': 'AI-Route-Planner/1.0'})
+            response.raise_for_status()
+            
+            data = response.json()
+            
+            # Extract matrices from response
+            if 'distances' in data and 'durations' in data:
+                distance_matrix = np.array(data['distances'])
+                duration_matrix = np.array(data['durations'])
+            else:
+                raise ValueError("Invalid response from OSRM API")
+        except Exception as e:
+            print(f"Error calculating distances with OSRM: {e}")
+            # Fall back to Euclidean distances
+            distance_matrix = self.calculate_euclidean_distance_matrix(locations)
+            # Estimate durations (assume 30 km/h average speed)
+            duration_matrix = distance_matrix * 120  # seconds per km
+        
+        return distance_matrix, duration_matrix
+    
+    def calculate_euclidean_distance_matrix(self, locations):
+        """
+        Calculate Euclidean distance matrix as a fallback.
+        
+        Args:
+            locations: List of (lat, lon) tuples
+            
+        Returns:
+            Distance matrix
+        """
+        import numpy as np
+        
+        # Initialize the matrix
+        n = len(locations)
+        matrix = np.zeros((n, n))
+        
+        # Approximation: 1 degree of latitude = 111 km
+        # Longitude conversion varies with latitude
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                    
                 lat1, lon1 = locations[i]
                 lat2, lon2 = locations[j]
                 
@@ -121,5 +209,134 @@ def _fill_block_with_euclidean(self, distance_matrix, duration_matrix, locations
                 # Euclidean distance
                 distance = np.sqrt(lat_km**2 + lon_km**2) * 1000  # Convert to meters
                 
-                distance_matrix[i, j] = distance
-                duration_matrix[i, j] = distance * 0.12  # seconds per meter (30 km/h)
+                matrix[i, j] = distance
+        
+        return matrix
+    
+    def calculate_graphhopper_distance_matrix(self, locations, api_key):
+        """
+        Calculate distance and duration matrices using GraphHopper API.
+        
+        Args:
+            locations: List of (lat, lon) tuples
+            api_key: GraphHopper API key
+            
+        Returns:
+            Tuple of (distance_matrix, duration_matrix)
+        """
+        import numpy as np
+        import json
+        import time
+        
+        # Initialize matrices
+        n = len(locations)
+        distance_matrix = np.zeros((n, n))
+        duration_matrix = np.zeros((n, n))
+        
+        if not api_key:
+            print("No GraphHopper API key provided, falling back to Euclidean distances")
+            return self.calculate_euclidean_distance_matrix(locations), self.calculate_euclidean_distance_matrix(locations) * 0.12
+        
+        # GraphHopper has a limit on the number of points in a single request
+        # Free tier typically allows 10x10 matrix (100 elements) per request
+        MAX_LOCATIONS_PER_REQUEST = 10
+        
+        # Process the distance matrix in batches
+        for i in range(0, n, MAX_LOCATIONS_PER_REQUEST):
+            i_end = min(i + MAX_LOCATIONS_PER_REQUEST, n)
+            
+            for j in range(0, n, MAX_LOCATIONS_PER_REQUEST):
+                j_end = min(j + MAX_LOCATIONS_PER_REQUEST, n)
+                
+                # Skip if i == j (diagonal blocks)
+                if i == j:
+                    # For diagonal elements (same location), set distance and time to 0
+                    for k in range(i, i_end):
+                        distance_matrix[k, k] = 0
+                        duration_matrix[k, k] = 0
+                    continue
+                
+                # Prepare points for this batch
+                from_points = locations[i:i_end]
+                to_points = locations[j:j_end]
+                
+                # Format points for GraphHopper API
+                from_points_json = [{"lat": lat, "lng": lon} for lat, lon in from_points]
+                to_points_json = [{"lat": lat, "lng": lon} for lat, lon in to_points]
+                
+                # Prepare the request
+                url = "https://graphhopper.com/api/1/matrix"
+                params = {
+                    "key": api_key,
+                    "out_arrays": ["distances", "times"],
+                    "vehicle": "car"
+                }
+                
+                payload = {
+                    "from_points": from_points_json,
+                    "to_points": to_points_json,
+                    "fail_fast": False
+                }
+                
+                try:
+                    # Make the API request
+                    response = self.requests.post(url, params=params, json=payload, timeout=30)
+                    
+                    # Handle rate limiting
+                    if response.status_code == 429:
+                        print("Rate limited by GraphHopper API, waiting before retry...")
+                        time.sleep(2)  # Wait before retrying
+                        response = self.requests.post(url, params=params, json=payload, timeout=30)
+                    
+                    # Check for successful response
+                    if response.status_code == 200:
+                        data = response.json()
+                        
+                        # Extract matrices
+                        if 'distances' in data and 'times' in data:
+                            batch_distances = np.array(data['distances'])
+                            batch_times = np.array(data['times'])
+                            
+                            # Fill the corresponding part of the full matrices
+                            for k_from, k_global_from in enumerate(range(i, i_end)):
+                                for k_to, k_global_to in enumerate(range(j, j_end)):
+                                    distance_matrix[k_global_from, k_global_to] = batch_distances[k_from][k_to]
+                                    duration_matrix[k_global_from, k_global_to] = batch_times[k_from][k_to]
+                        else:
+                            print(f"Unexpected GraphHopper API response format: {data}")
+                            # Fill with Euclidean distances for this batch
+                            self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+                    else:
+                        print(f"GraphHopper API error: {response.status_code} - {response.text}")
+                        # Fill with Euclidean distances for this batch
+                        self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+                    
+                    # Add a small delay to avoid hitting rate limits
+                    time.sleep(0.5)
+                    
+                except Exception as e:
+                    print(f"Error calculating distances with GraphHopper: {e}")
+                    # Fill with Euclidean distances for this batch
+                    self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+        
+        return distance_matrix, duration_matrix
+
+    def _fill_block_with_euclidean(self, distance_matrix, duration_matrix, locations, from_indices, to_indices):
+        """Helper method to fill a block with Euclidean distances when API fails."""
+        import numpy as np
+        
+        for i in from_indices:
+            for j in to_indices:
+                if i != j:  # Skip diagonals
+                    lat1, lon1 = locations[i]
+                    lat2, lon2 = locations[j]
+                    
+                    # Approximate distance calculation
+                    lat_km = abs(lat1 - lat2) * 111
+                    lon_km = abs(lon1 - lon2) * 111 * np.cos(np.radians((lat1 + lat2) / 2))
+                    
+                    # Euclidean distance
+                    distance = np.sqrt(lat_km**2 + lon_km**2) * 1000  # Convert to meters
+                    
+                    distance_matrix[i, j] = distance
+                    duration_matrix[i, j] = distance * 0.12  # seconds per meter (30 km/h)
