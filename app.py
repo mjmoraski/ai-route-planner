@@ -290,61 +290,57 @@ if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_wid
             # Ensure required columns exist with default values if missing
             st.session_state.df = processor.ensure_required_columns(st.session_state.df)
             
-# Calculate distance matrix
-try:
-    # Add depot to the beginning of locations if needed
-    if depot_option == "Enter depot coordinates manually":
-        locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-    else:
-        locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+with st.spinner("Processing data and calculating distances..."):
+    # Handle the case where lat/long might be missing
+    processor = DataProcessor()
     
-    if use_graphhopper and graphhopper_api_key:
-        st.info("Calculating real-world distances using GraphHopper API...")
-        distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
-        st.session_state.distance_matrix = distance_matrix
-        st.session_state.duration_matrix = duration_matrix
-        st.success("✅ GraphHopper distance calculation successful")
-    else:
-        st.info("Using straight-line distances (GraphHopper API not used)...")
-        distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
-        duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
-        st.session_state.distance_matrix = distance_matrix
-        st.session_state.duration_matrix = duration_matrix
-except Exception as e:
-    st.error(f"Error calculating distances: {e}")
-    st.info("Falling back to straight-line distances...")
+    # If lat/long are missing but address is available, geocode the addresses
+    if ('Latitude' not in st.session_state.df.columns or 'Longitude' not in st.session_state.df.columns) and 'Address' in st.session_state.df.columns:
+        st.info("Geocoding addresses to get coordinates...")
+        df_with_coords = processor.geocode_addresses(st.session_state.df)
+        if df_with_coords is not None:
+            st.session_state.df = df_with_coords
+        else:
+            st.error("Failed to geocode addresses. Please provide a CSV with Latitude and Longitude columns.")
+            st.stop()
     
-    # Fall back to Euclidean distances
-    if depot_option == "Enter depot coordinates manually":
-        all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-    else:
-        all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+    # Ensure required columns exist with default values if missing
+    st.session_state.df = processor.ensure_required_columns(st.session_state.df)
     
-    distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
-    duration_matrix = distance_matrix * 0.12  # Simple time estimation
-    st.session_state.distance_matrix = distance_matrix
-    st.session_state.duration_matrix = duration_matrix
-                
-                # Fall back to Euclidean distances
-                if depot_option == "Enter depot coordinates manually":
-                    all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                else:
-                    all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                
-                distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
-                duration_matrix = [[dist * 2 for dist in row] for row in distance_matrix]  # Rough estimate: 30 km/h speed
-                st.session_state.distance_matrix = distance_matrix
-                st.session_state.duration_matrix = duration_matrix
+    # Calculate distance matrix
+    try:
+        # Add depot to the beginning of locations if needed
+        if depot_option == "Enter depot coordinates manually":
+            locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+        else:
+            locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
         
-        with st.spinner("Optimizing routes..."):
-            # Set up the optimizer with all constraints and settings
-            optimizer = RouteOptimizer(
-                distance_matrix=st.session_state.distance_matrix,
-                duration_matrix=st.session_state.duration_matrix,
-                num_vehicles=num_vehicles,
-                depot=0,  # Depot is the first location
-                vehicle_capacities=vehicle_capacities
-            )
+        if use_graphhopper and graphhopper_api_key:
+            st.info("Calculating real-world distances using GraphHopper API...")
+            distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
+            st.session_state.distance_matrix = distance_matrix
+            st.session_state.duration_matrix = duration_matrix
+            st.success("✅ GraphHopper distance calculation successful")
+        else:
+            st.info("Using straight-line distances (GraphHopper API not used)...")
+            distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
+            duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
+            st.session_state.distance_matrix = distance_matrix
+            st.session_state.duration_matrix = duration_matrix
+    except Exception as e:
+        st.error(f"Error calculating distances: {e}")
+        st.info("Falling back to straight-line distances...")
+        
+        # Fall back to Euclidean distances
+        if depot_option == "Enter depot coordinates manually":
+            all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+        else:
+            all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+        
+        distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
+        duration_matrix = distance_matrix * 0.12  # Simple time estimation
+        st.session_state.distance_matrix = distance_matrix
+        st.session_state.duration_matrix = duration_matrix
             
             # Prepare time windows if available
             time_windows = []
