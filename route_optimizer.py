@@ -1,3 +1,6 @@
+import numpy as np
+from ortools.constraint_solver import pywrapcp, routing_enums_pb2
+
 class RouteOptimizer:
     """Class for optimizing delivery routes using OR-Tools."""
     
@@ -12,9 +15,6 @@ class RouteOptimizer:
             depot: Index of the depot location
             vehicle_capacities: List of capacities for each vehicle
         """
-        import numpy as np
-        from ortools.constraint_solver import pywrapcp, routing_enums_pb2
-        
         self.distance_matrix = distance_matrix
         self.duration_matrix = duration_matrix
         self.num_vehicles = num_vehicles
@@ -53,7 +53,7 @@ class RouteOptimizer:
         def distance_callback(from_index, to_index):
             from_node = self.manager.IndexToNode(from_index)
             to_node = self.manager.IndexToNode(to_index)
-            return self.distance_matrix[from_node][to_node]
+            return int(self.distance_matrix[from_node][to_node])
         
         self.transit_callback_index = self.routing.RegisterTransitCallback(distance_callback)
         self.routing.SetArcCostEvaluatorOfAllVehicles(self.transit_callback_index)
@@ -92,8 +92,8 @@ class RouteOptimizer:
             index = self.manager.NodeToIndex(location_idx)
             # Convert minutes to seconds
             time_dimension.CumulVar(index).SetRange(
-                time_window[0] * 60,  # Earliest in seconds
-                time_window[1] * 60   # Latest in seconds
+                int(time_window[0] * 60),  # Earliest in seconds
+                int(time_window[1] * 60)   # Latest in seconds
             )
     
     def set_service_times(self, service_times):
@@ -105,7 +105,7 @@ class RouteOptimizer:
         """
         self.service_times = service_times
         
-        if not hasattr(self.routing, "GetDimensionOrDie"):
+        if "Time" not in [dim.name() for dim in self.routing.GetDimensions()]:
             raise ValueError("Must call set_time_windows before set_service_times")
         
         time_dimension = self.routing.GetDimensionOrDie("Time")
@@ -114,7 +114,7 @@ class RouteOptimizer:
         for location_idx, service_time in enumerate(service_times):
             index = self.manager.NodeToIndex(location_idx)
             # Convert minutes to seconds
-            time_dimension.SetTransitVar(index, int(service_time * 60))
+            time_dimension.SlackVar(index).SetValue(int(service_time * 60))
     
     def set_priorities(self, priorities, weight=5):
         """
@@ -191,36 +191,47 @@ class RouteOptimizer:
             )
             distance_dimension = self.routing.GetDimensionOrDie(dimension_name)
             
-            # Add a cost for each vehicle proportional to the square of the route length
+            # Add a cost for each vehicle proportional to the route length
             for vehicle_id in range(self.num_vehicles):
                 end_index = self.routing.End(vehicle_id)
-                self.routing.AddVariableMinimizedByFinalizer(
-                    distance_dimension.CumulVar(end_index))
-                
-                # Add quadratic cost to balance routes
-                coef = 10  # Weight of the balancing objective
-                self.routing.AddToObjectiveFunction(
-                    self.routing.VarPower(distance_dimension.CumulVar(end_index), 2) * coef)
+                distance_dimension.SetCumulVarSoftUpperBound(
+                    end_index,
+                    3000000,
+                    10  # Penalty coefficient
+                )
         
         # Add priority handling if provided
         if self.priorities and self.priority_weights > 0:
-            for location_idx, priority in enumerate(self.priorities):
-                if location_idx == self.depot:
-                    continue  # Skip depot
-                    
-                # Higher priority = lower cost (negative weight)
-                for vehicle_id in range(self.num_vehicles):
-                    index = self.manager.NodeToIndex(location_idx)
-                    # Scale by priority weight (0-10)
-                    priority_cost = -1000 * priority * self.priority_weights / 10
-                    self.routing.AddToObjectiveFunction(
-                        self.routing.ActiveVar(index) * priority_cost)
+            # Create a disjunction for each non-depot location with priority-based penalty
+            for location_idx in range(1, len(self.priorities)):  # Skip depot
+                index = self.manager.NodeToIndex(location_idx)
+                priority = self.priorities[location_idx]
+                
+                # Higher priority = lower penalty for not visiting
+                # Scale by priority weight (0-10)
+                penalty = int(10000 * (4 - priority) * self.priority_weights / 10)
+                
+                # Add disjunction with penalty
+                self.routing.AddDisjunction([index], penalty)
+        
+        # Set additional search parameters for better solutions
+        self.search_parameters.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
+        self.search_parameters.time_limit.seconds = 30
+        self.search_parameters.log_search = False
         
         # Solve the problem
         solution = self.routing.SolveWithParameters(self.search_parameters)
         
         if not solution:
-            return None
+            # Try with relaxed parameters
+            self.search_parameters.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.FIRST_UNBOUND_MIN_VALUE)
+            self.search_parameters.time_limit.seconds = 60
+            solution = self.routing.SolveWithParameters(self.search_parameters)
+            
+            if not solution:
+                return None
         
         # Extract the routes
         routes = {}
@@ -235,3 +246,67 @@ class RouteOptimizer:
             routes[vehicle_id] = route
         
         return routes
+    
+    def get_solution_info(self, solution):
+        """
+        Get detailed information about the solution.
+        
+        Args:
+            solution: The solution object from OR-Tools
+            
+        Returns:
+            Dictionary with solution statistics
+        """
+        if not solution:
+            return None
+            
+        info = {
+            'total_distance': 0,
+            'max_route_distance': 0,
+            'dropped_nodes': [],
+            'routes': {}
+        }
+        
+        # Get dropped nodes
+        for node in range(self.routing.Size()):
+            if self.routing.IsStart(node) or self.routing.IsEnd(node):
+                continue
+            if solution.Value(self.routing.NextVar(node)) == node:
+                info['dropped_nodes'].append(self.manager.IndexToNode(node))
+        
+        # Get route information
+        for vehicle_id in range(self.num_vehicles):
+            index = self.routing.Start(vehicle_id)
+            route_distance = 0
+            route_load = 0
+            route = []
+            
+            while not self.routing.IsEnd(index):
+                node_index = self.manager.IndexToNode(index)
+                route.append(node_index)
+                
+                # Get next index
+                previous_index = index
+                index = solution.Value(self.routing.NextVar(index))
+                
+                # Add distance
+                route_distance += self.routing.GetArcCostForVehicle(
+                    previous_index, index, vehicle_id)
+                
+                # Add load
+                if node_index != self.depot:
+                    route_load += 1
+            
+            # Add final node
+            route.append(self.manager.IndexToNode(index))
+            
+            info['routes'][vehicle_id] = {
+                'route': route,
+                'distance': route_distance,
+                'load': route_load
+            }
+            
+            info['total_distance'] += route_distance
+            info['max_route_distance'] = max(info['max_route_distance'], route_distance)
+        
+        return info
