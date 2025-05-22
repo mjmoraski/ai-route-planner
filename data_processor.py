@@ -1,13 +1,32 @@
+import pandas as pd
+import numpy as np
+import requests
+import time
+import json
+
+class RateLimiter:
+    """Simple rate limiter for API calls."""
+    def __init__(self, calls_per_second=1):
+        self.calls_per_second = calls_per_second
+        self.last_call = 0
+    
+    def wait_if_needed(self):
+        current_time = time.time()
+        time_since_last_call = current_time - self.last_call
+        min_interval = 1.0 / self.calls_per_second
+        
+        if time_since_last_call < min_interval:
+            time.sleep(min_interval - time_since_last_call)
+        
+        self.last_call = time.time()
+
 class DataProcessor:
     """Class for processing delivery data."""
     
     def __init__(self):
         """Initialize the data processor."""
-        import pandas as pd
-        import numpy as np
-        import requests
-        
         self.requests = requests
+        self.rate_limiter = RateLimiter(calls_per_second=1)
     
     def ensure_required_columns(self, df):
         """
@@ -19,8 +38,6 @@ class DataProcessor:
         Returns:
             DataFrame with all required columns (filled with defaults if missing)
         """
-        import pandas as pd
-        
         # Create a copy to avoid modifying the original
         df_copy = df.copy()
         
@@ -63,9 +80,6 @@ class DataProcessor:
         Returns:
             DataFrame with added Latitude and Longitude columns
         """
-        import pandas as pd
-        import time
-        
         # Check if Address column exists
         if 'Address' not in df.columns:
             return None
@@ -91,8 +105,8 @@ class DataProcessor:
             }
             
             try:
-                # Add a delay to respect API usage limits
-                time.sleep(1)
+                # Rate limit the requests
+                self.rate_limiter.wait_if_needed()
                 
                 response = self.requests.get(base_url, params=params, headers={'User-Agent': 'AI-Route-Planner/1.0'})
                 response.raise_for_status()
@@ -116,7 +130,6 @@ class DataProcessor:
             avg_lon = df_copy['Longitude'].dropna().mean()
             
             # Fill missing values with slightly perturbed averages
-            import numpy as np
             for idx, row in df_copy[df_copy['Latitude'].isna()].iterrows():
                 df_copy.at[idx, 'Latitude'] = avg_lat + np.random.normal(0, 0.01)
                 df_copy.at[idx, 'Longitude'] = avg_lon + np.random.normal(0, 0.01)
@@ -133,10 +146,6 @@ class DataProcessor:
         Returns:
             Tuple of (distance_matrix, duration_matrix)
         """
-        import numpy as np
-        import requests
-        import time
-        
         # Initialize matrices
         n = len(locations)
         distance_matrix = np.zeros((n, n))
@@ -186,8 +195,6 @@ class DataProcessor:
         Returns:
             Distance matrix
         """
-        import numpy as np
-        
         # Initialize the matrix
         n = len(locations)
         matrix = np.zeros((n, n))
@@ -224,10 +231,6 @@ class DataProcessor:
         Returns:
             Tuple of (distance_matrix, duration_matrix)
         """
-        import numpy as np
-        import json
-        import time
-        
         # Initialize matrices
         n = len(locations)
         distance_matrix = np.zeros((n, n))
@@ -237,34 +240,50 @@ class DataProcessor:
             print("No GraphHopper API key provided, falling back to Euclidean distances")
             return self.calculate_euclidean_distance_matrix(locations), self.calculate_euclidean_distance_matrix(locations) * 0.12
         
-        # GraphHopper has a limit on the number of points in a single request
-        # Free tier typically allows 10x10 matrix (100 elements) per request
-        MAX_LOCATIONS_PER_REQUEST = 10
+        # GraphHopper Matrix API has limits
+        MAX_MATRIX_SIZE = 100  # Free tier limit
+        total_elements = n * n
         
-        # Process the distance matrix in batches
-        for i in range(0, n, MAX_LOCATIONS_PER_REQUEST):
-            i_end = min(i + MAX_LOCATIONS_PER_REQUEST, n)
+        if total_elements > MAX_MATRIX_SIZE:
+            # For large matrices, use a hybrid approach
+            # Calculate real distances for nearby locations, use estimates for distant ones
+            print(f"Matrix too large ({total_elements} elements). Using hybrid approach.")
             
-            for j in range(0, n, MAX_LOCATIONS_PER_REQUEST):
-                j_end = min(j + MAX_LOCATIONS_PER_REQUEST, n)
+            # First, get Euclidean distances as a baseline
+            euclidean_matrix = self.calculate_euclidean_distance_matrix(locations)
+            
+            # Sort pairs by Euclidean distance and get real distances for closest ones
+            pairs = []
+            for i in range(n):
+                for j in range(n):
+                    if i != j:
+                        pairs.append((i, j, euclidean_matrix[i][j]))
+            
+            # Sort by distance
+            pairs.sort(key=lambda x: x[2])
+            
+            # Get real distances for the closest pairs up to the limit
+            pairs_to_calculate = pairs[:MAX_MATRIX_SIZE - n]  # Reserve n for diagonal
+            
+            # Batch process the closest pairs
+            batch_size = 10
+            for batch_start in range(0, len(pairs_to_calculate), batch_size):
+                batch_end = min(batch_start + batch_size, len(pairs_to_calculate))
+                batch_pairs = pairs_to_calculate[batch_start:batch_end]
                 
-                # Skip if i == j (diagonal blocks)
-                if i == j:
-                    # For diagonal elements (same location), set distance and time to 0
-                    for k in range(i, i_end):
-                        distance_matrix[k, k] = 0
-                        duration_matrix[k, k] = 0
-                    continue
+                # Create unique points for this batch
+                unique_indices = set()
+                for i, j, _ in batch_pairs:
+                    unique_indices.add(i)
+                    unique_indices.add(j)
                 
-                # Prepare points for this batch
-                from_points = locations[i:i_end]
-                to_points = locations[j:j_end]
+                unique_indices = sorted(list(unique_indices))
+                batch_locations = [locations[i] for i in unique_indices]
                 
-                # Format points for GraphHopper API
-                from_points_json = [{"lat": lat, "lng": lon} for lat, lon in from_points]
-                to_points_json = [{"lat": lat, "lng": lon} for lat, lon in to_points]
+                # Create mapping
+                index_map = {idx: i for i, idx in enumerate(unique_indices)}
                 
-                # Prepare the request
+                # Calculate for this batch
                 url = "https://graphhopper.com/api/1/matrix"
                 params = {
                     "key": api_key,
@@ -272,59 +291,89 @@ class DataProcessor:
                     "vehicle": "car"
                 }
                 
+                points_json = [{"lat": lat, "lng": lon} for lat, lon in batch_locations]
                 payload = {
-                    "from_points": from_points_json,
-                    "to_points": to_points_json,
+                    "points": points_json,
                     "fail_fast": False
                 }
                 
                 try:
-                    # Make the API request
+                    self.rate_limiter.wait_if_needed()
                     response = self.requests.post(url, params=params, json=payload, timeout=30)
                     
-                    # Handle rate limiting
-                    if response.status_code == 429:
-                        print("Rate limited by GraphHopper API, waiting before retry...")
-                        time.sleep(2)  # Wait before retrying
-                        response = self.requests.post(url, params=params, json=payload, timeout=30)
-                    
-                    # Check for successful response
                     if response.status_code == 200:
                         data = response.json()
                         
-                        # Extract matrices
                         if 'distances' in data and 'times' in data:
                             batch_distances = np.array(data['distances'])
                             batch_times = np.array(data['times'])
                             
-                            # Fill the corresponding part of the full matrices
-                            for k_from, k_global_from in enumerate(range(i, i_end)):
-                                for k_to, k_global_to in enumerate(range(j, j_end)):
-                                    distance_matrix[k_global_from, k_global_to] = batch_distances[k_from][k_to]
-                                    duration_matrix[k_global_from, k_global_to] = batch_times[k_from][k_to]
-                        else:
-                            print(f"Unexpected GraphHopper API response format: {data}")
-                            # Fill with Euclidean distances for this batch
-                            self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
-                    else:
-                        print(f"GraphHopper API error: {response.status_code} - {response.text}")
-                        # Fill with Euclidean distances for this batch
-                        self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
-                    
-                    # Add a small delay to avoid hitting rate limits
-                    time.sleep(0.5)
-                    
+                            # Map back to original indices
+                            for i_orig, j_orig, _ in batch_pairs:
+                                i_batch = index_map[i_orig]
+                                j_batch = index_map[j_orig]
+                                
+                                distance_matrix[i_orig, j_orig] = batch_distances[i_batch][j_batch]
+                                duration_matrix[i_orig, j_orig] = batch_times[i_batch][j_batch]
+                
                 except Exception as e:
-                    print(f"Error calculating distances with GraphHopper: {e}")
-                    # Fill with Euclidean distances for this batch
-                    self._fill_block_with_euclidean(distance_matrix, duration_matrix, locations, range(i, i_end), range(j, j_end))
+                    print(f"Error in batch calculation: {e}")
+            
+            # For remaining pairs, use scaled Euclidean distances
+            for i in range(n):
+                for j in range(n):
+                    if distance_matrix[i, j] == 0 and i != j:
+                        # Use a scaling factor based on calculated distances
+                        scale_factor = 1.5  # Roads are typically 1.5x straight line
+                        distance_matrix[i, j] = euclidean_matrix[i, j] * scale_factor
+                        duration_matrix[i, j] = distance_matrix[i, j] * 0.06  # 60 km/h average
+        
+        else:
+            # Small matrix - calculate all at once
+            url = "https://graphhopper.com/api/1/matrix"
+            params = {
+                "key": api_key,
+                "out_arrays": ["distances", "times"],
+                "vehicle": "car"
+            }
+            
+            points_json = [{"lat": lat, "lng": lon} for lat, lon in locations]
+            payload = {
+                "points": points_json,
+                "fail_fast": False
+            }
+            
+            try:
+                self.rate_limiter.wait_if_needed()
+                response = self.requests.post(url, params=params, json=payload, timeout=30)
+                
+                # Handle rate limiting
+                if response.status_code == 429:
+                    print("Rate limited by GraphHopper API, waiting before retry...")
+                    time.sleep(2)  # Wait before retrying
+                    response = self.requests.post(url, params=params, json=payload, timeout=30)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    
+                    if 'distances' in data and 'times' in data:
+                        distance_matrix = np.array(data['distances'])
+                        duration_matrix = np.array(data['times'])
+                    else:
+                        raise ValueError("Invalid response format")
+                else:
+                    raise ValueError(f"API error: {response.status_code}")
+                    
+            except Exception as e:
+                print(f"Error calculating distances with GraphHopper: {e}")
+                # Fall back to Euclidean distances
+                distance_matrix = self.calculate_euclidean_distance_matrix(locations)
+                duration_matrix = distance_matrix * 0.12
         
         return distance_matrix, duration_matrix
 
     def _fill_block_with_euclidean(self, distance_matrix, duration_matrix, locations, from_indices, to_indices):
         """Helper method to fill a block with Euclidean distances when API fails."""
-        import numpy as np
-        
         for i in from_indices:
             for j in to_indices:
                 if i != j:  # Skip diagonals
