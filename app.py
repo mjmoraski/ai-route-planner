@@ -78,187 +78,7 @@ def validate_delivery_data(df):
         try:
             for idx, row in df.iterrows():
                 if pd.notna(row['Time Window Start']) and pd.notna(row['Time Window End']):
-                
-                # Calculate the total distance for this route
-                route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-                
-                # Create a nicer table for display
-                display_cols = ['Stop', 'Type', 'Name', 'Address', 'Arrival', 'Departure']
-                if 'Priority' in route_df.columns:
-                    display_cols.append('Priority')
-                if 'Package Size' in route_df.columns:
-                    display_cols.append('Package Size')
-                
-                st.dataframe(route_df[display_cols], use_container_width=True)
-                
-                st.info(f"📏 Total Distance: {route_distance/1000:.2f} km  |  ⏱️ Estimated Duration: {cumulative_time:.0f} minutes")
-    
-    with tab2:
-        # Display the interactive map
-        if st.session_state.map_html:
-            import streamlit.components.v1 as components
-            components.html(st.session_state.map_html, height=600)
-        else:
-            st.info("Map visualization will appear here after optimization.")
-    
-    with tab3:
-        # Display the summary
-        if st.session_state.ai_explanation:
-            st.markdown("### 📊 Route Optimization Summary")
-            st.markdown(st.session_state.ai_explanation)
-        else:
-            st.info("Summary will appear here after optimization.")
-    
-    with tab4:
-        # Export options
-        st.markdown("### 📥 Export Options")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Export routes as CSV
-            if st.button("📊 Export Routes as CSV", use_container_width=True):
-                # Create a CSV with all route information
-                all_routes_data = []
-                
-                for vehicle_id, route in st.session_state.optimized_routes.items():
-                    if len(route) <= 2:  # Skip empty routes
-                        continue
-                    
-                    for i, location_idx in enumerate(route):
-                        if location_idx == 0:  # Depot
-                            if i == 0:
-                                stop_type = "Start (Depot)"
-                            else:
-                                stop_type = "End (Depot)"
-                            row_data = {
-                                'Vehicle': vehicle_id + 1,
-                                'Stop_Number': i,
-                                'Stop_Type': stop_type,
-                                'Location': 'Depot',
-                                'Name': 'Depot',
-                                'Address': 'Depot Location'
-                            }
-                        else:
-                            stop_idx = location_idx - 1
-                            row = st.session_state.df.iloc[stop_idx]
-                            row_data = {
-                                'Vehicle': vehicle_id + 1,
-                                'Stop_Number': i,
-                                'Stop_Type': 'Delivery',
-                                'Location': location_idx,
-                                'Name': row['Name'],
-                                'Address': row.get('Address', 'N/A'),
-                                'Latitude': row['Latitude'],
-                                'Longitude': row['Longitude'],
-                                'Priority': row.get('Priority', 'N/A'),
-                                'Package_Size': row.get('Package Size', 'N/A'),
-                                'Time_Window_Start': row.get('Time Window Start', 'N/A'),
-                                'Time_Window_End': row.get('Time Window End', 'N/A'),
-                                'Service_Time': row.get('Service Time (min)', 'N/A')
-                            }
-                        
-                        all_routes_data.append(row_data)
-                
-                # Convert to DataFrame and download
-                routes_df = pd.DataFrame(all_routes_data)
-                csv = routes_df.to_csv(index=False)
-                
-                st.download_button(
-                    label="💾 Download Routes CSV",
-                    data=csv,
-                    file_name=f"optimized_routes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        
-        with col2:
-            # Generate PDF report
-            if st.button("📄 Generate PDF Report", use_container_width=True):
-                try:
-                    from fpdf import FPDF
-                    
-                    # Create PDF
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=16)
-                    pdf.cell(0, 10, "Route Optimization Report", ln=True, align='C')
-                    pdf.ln(5)
-                    
-                    # Add generation date
-                    pdf.set_font("Arial", size=10)
-                    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add summary
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Summary", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    
-                    pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
-                    pdf.cell(0, 8, f"Active Vehicles: {active_vehicles} out of {num_vehicles}", ln=True)
-                    pdf.cell(0, 8, f"Optimization Objective: {optimize_for}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add routes
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Route Details", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    for vehicle_id, route in st.session_state.optimized_routes.items():
-                        if len(route) <= 2:
-                            continue
-                        
-                        pdf.ln(3)
-                        pdf.set_font("Arial", 'B', 11)
-                        pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
-                        pdf.set_font("Arial", size=9)
-                        
-                        for i, location_idx in enumerate(route[1:-1], 1):
-                            stop_idx = location_idx - 1
-                            row = st.session_state.df.iloc[stop_idx]
-                            pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
-                    
-                    # Output PDF
-                    pdf_output = pdf.output(dest='S').encode('latin1')
-                    
-                    st.download_button(
-                        label="💾 Download PDF Report",
-                        data=pdf_output,
-                        file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
-                    )
-                    
-                except Exception as e:
-                    st.error(f"Error generating PDF: {e}")
-                    st.info("Make sure fpdf is installed: pip install fpdf")
-
-# Add a footer with optimization statistics
-if st.session_state.optimized_routes:
-    st.divider()
-    
-    # Calculate statistics
-    total_distance = 0
-    total_stops = 0
-    for vehicle_id, route in st.session_state.optimized_routes.items():
-        if len(route) > 2:
-            route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-            total_distance += route_distance
-            total_stops += len(route) - 2
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Distance", f"{total_distance/1000:.1f} km")
-    with col2:
-        st.metric("Total Stops", total_stops)
-    with col3:
-        active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-        st.metric("Active Vehicles", f"{active_vehicles}/{num_vehicles}")
-    with col4:
-        avg_stops = total_stops / active_vehicles if active_vehicles > 0 else 0
-        st.metric("Avg Stops/Vehicle", f"{avg_stops:.1f}")start_parts = str(row['Time Window Start']).split(':')
+                    start_parts = str(row['Time Window Start']).split(':')
                     end_parts = str(row['Time Window End']).split(':')
                     
                     if len(start_parts) != 2 or len(end_parts) != 2:
@@ -280,23 +100,6 @@ if st.session_state.optimized_routes:
             issues.append(f"Error validating time windows: {e}")
     
     return issues
-
-def validate_api_keys(openai_key, graphhopper_key=None):
-    """Validate API keys before using them."""
-    errors = []
-    
-    # COMMENTED OUT - No API key validation needed
-    # # Validate OpenAI key
-    # if not openai_key:
-    #     errors.append("OpenAI API key is required")
-    # elif not openai_key.startswith('sk-'):
-    #     errors.append("OpenAI API key should start with 'sk-'")
-    
-    # # Validate GraphHopper key if provided
-    # if graphhopper_key and len(graphhopper_key) < 10:
-    #     errors.append("GraphHopper API key seems too short")
-    
-    return errors
 
 def generate_csv_template():
     """Generate a CSV template for users to fill in."""
@@ -323,46 +126,7 @@ st.caption("🧠 Route optimization using OR-Tools (AI and GraphHopper features 
 with st.sidebar:
     st.header("Settings")
     
-    # COMMENTED OUT OpenAI settings
-    # api_option = st.radio("OpenAI API Key", ["Use from secrets.toml", "Enter API Key"], 
-    #                      help="Choose where to get the OpenAI API key")
-    
-    # if api_option == "Enter API Key":
-    #     openai_api_key = st.text_input("OpenAI API Key", type="password")
-    # else:
-    #     try:
-    #         openai_api_key = st.secrets["OPENAI_API_KEY"]
-    #     except:
-    #         openai_api_key = ""
-    #         st.warning("No API key found in secrets.toml")
-    
-    # openai_model = st.selectbox(
-    #     "OpenAI Model",
-    #     ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-    #     index=0
-    # )
-    
     st.info("📌 AI explanations are temporarily disabled")
-
-    # COMMENTED OUT GraphHopper settings
-    # # Add distance calculation options
-    # st.subheader("Distance Calculation")
-    # use_graphhopper = st.checkbox("Use GraphHopper for real-world distances", value=True, 
-    #                            help="If checked, will use GraphHopper API for accurate distances")
-    
-    # if use_graphhopper:
-    #     graphhopper_option = st.radio("GraphHopper API Key", ["Use from secrets.toml", "Enter API Key"], 
-    #                               help="Choose where to get the GraphHopper API key")
-        
-    #     if graphhopper_option == "Enter API Key":
-    #         graphhopper_api_key = st.text_input("GraphHopper API Key", type="password")
-    #     else:
-    #         try:
-    #             graphhopper_api_key = st.secrets["GRAPHHOPPER_API_KEY"]
-    #         except:
-    #             graphhopper_api_key = ""
-    #             st.warning("No GraphHopper API key found in secrets.toml")
-    
     st.info("📌 Using Euclidean (straight-line) distances")
     
     st.subheader("Sample Data")
@@ -562,9 +326,6 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
     if st.session_state.df is None:
         st.error("Please upload or load sample data first")
     else:
-        # SKIP API validation since we're not using APIs
-        # api_errors = validate_api_keys(openai_api_key, graphhopper_api_key if use_graphhopper else None)
-        
         with st.spinner("Processing data and calculating distances..."):
             # Handle the case where lat/long might be missing
             processor = DataProcessor()
@@ -810,35 +571,217 @@ if st.session_state.optimized_routes:
                     route_df = pd.concat([route_df, stop_data], ignore_index=True)
                 
                 # Add depot return
-                if depot_option == "Enter depot coordinates manually":
-                    # Get travel time from last stop to depot
-                    last_idx = route[-2]  # Index of the last stop before returning to depot
-                    travel_time = st.session_state.duration_matrix[last_idx][0] / 60  # Convert seconds to minutes
-                    cumulative_time += travel_time
+                if len(route) > 2:  # Only add depot return if there are actual stops
+                    if depot_option == "Enter depot coordinates manually":
+                        # Get travel time from last stop to depot
+                        last_idx = route[-2]  # Index of the last stop before returning to depot
+                        travel_time = st.session_state.duration_matrix[last_idx][0] / 60  # Convert seconds to minutes
+                        cumulative_time += travel_time
+                        
+                        return_time = start_time + timedelta(minutes=cumulative_time)
+                        
+                        depot_return_row = pd.DataFrame({
+                            'Stop': [len(route)-1],
+                            'Type': ['Depot Return'],
+                            'Name': ['Depot'],
+                            'Address': ['Depot Location'],
+                            'Arrival': [return_time.strftime('%H:%M')],
+                            'Departure': ['-']
+                        })
+                        route_df = pd.concat([route_df, depot_return_row], ignore_index=True)
+                    else:
+                        depot_idx = route[-1]
+                        # Get travel time from last stop to depot
+                        last_idx = route[-2]  # Index of the last stop before returning to depot
+                        travel_time = st.session_state.duration_matrix[last_idx][depot_idx] / 60  # Convert seconds to minutes
+                        cumulative_time += travel_time
+                        
+                        return_time = start_time + timedelta(minutes=cumulative_time)
+                        
+                        depot_data = st.session_state.df.iloc[0:1].copy()
+                        depot_data['Stop'] = len(route)-1
+                        depot_data['Type'] = 'Depot Return'
+                        depot_data['Arrival'] = return_time.strftime('%H:%M')
+                        depot_data['Departure'] = '-'
+                        route_df = pd.concat([route_df, depot_data], ignore_index=True)
+                
+                # Calculate the total distance for this route
+                route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
+                
+                # Create a nicer table for display
+                display_cols = ['Stop', 'Type', 'Name', 'Address', 'Arrival', 'Departure']
+                if 'Priority' in route_df.columns:
+                    display_cols.append('Priority')
+                if 'Package Size' in route_df.columns:
+                    display_cols.append('Package Size')
+                
+                st.dataframe(route_df[display_cols], use_container_width=True)
+                
+                st.info(f"📏 Total Distance: {route_distance/1000:.2f} km  |  ⏱️ Estimated Duration: {cumulative_time:.0f} minutes")
+    
+    with tab2:
+        # Display the interactive map
+        if st.session_state.map_html:
+            import streamlit.components.v1 as components
+            components.html(st.session_state.map_html, height=600)
+        else:
+            st.info("Map visualization will appear here after optimization.")
+    
+    with tab3:
+        # Display the summary
+        if st.session_state.ai_explanation:
+            st.markdown("### 📊 Route Optimization Summary")
+            st.markdown(st.session_state.ai_explanation)
+        else:
+            st.info("Summary will appear here after optimization.")
+    
+    with tab4:
+        # Export options
+        st.markdown("### 📥 Export Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Export routes as CSV
+            if st.button("📊 Export Routes as CSV", use_container_width=True):
+                # Create a CSV with all route information
+                all_routes_data = []
+                
+                for vehicle_id, route in st.session_state.optimized_routes.items():
+                    if len(route) <= 2:  # Skip empty routes
+                        continue
                     
-                    return_time = start_time + timedelta(minutes=cumulative_time)
+                    for i, location_idx in enumerate(route):
+                        if location_idx == 0:  # Depot
+                            if i == 0:
+                                stop_type = "Start (Depot)"
+                            else:
+                                stop_type = "End (Depot)"
+                            row_data = {
+                                'Vehicle': vehicle_id + 1,
+                                'Stop_Number': i,
+                                'Stop_Type': stop_type,
+                                'Location': 'Depot',
+                                'Name': 'Depot',
+                                'Address': 'Depot Location'
+                            }
+                        else:
+                            stop_idx = location_idx - 1
+                            row = st.session_state.df.iloc[stop_idx]
+                            row_data = {
+                                'Vehicle': vehicle_id + 1,
+                                'Stop_Number': i,
+                                'Stop_Type': 'Delivery',
+                                'Location': location_idx,
+                                'Name': row['Name'],
+                                'Address': row.get('Address', 'N/A'),
+                                'Latitude': row['Latitude'],
+                                'Longitude': row['Longitude'],
+                                'Priority': row.get('Priority', 'N/A'),
+                                'Package_Size': row.get('Package Size', 'N/A'),
+                                'Time_Window_Start': row.get('Time Window Start', 'N/A'),
+                                'Time_Window_End': row.get('Time Window End', 'N/A'),
+                                'Service_Time': row.get('Service Time (min)', 'N/A')
+                            }
+                        
+                        all_routes_data.append(row_data)
+                
+                # Convert to DataFrame and download
+                routes_df = pd.DataFrame(all_routes_data)
+                csv = routes_df.to_csv(index=False)
+                
+                st.download_button(
+                    label="💾 Download Routes CSV",
+                    data=csv,
+                    file_name=f"optimized_routes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        
+        with col2:
+            # Generate PDF report
+            if st.button("📄 Generate PDF Report", use_container_width=True):
+                try:
+                    from fpdf import FPDF
                     
-                    depot_return_row = pd.DataFrame({
-                        'Stop': [len(route)-1],
-                        'Type': ['Depot Return'],
-                        'Name': ['Depot'],
-                        'Address': ['Depot Location'],
-                        'Arrival': [return_time.strftime('%H:%M')],
-                        'Departure': ['-']
-                    })
-                    route_df = pd.concat([route_df, depot_return_row], ignore_index=True)
-                else:
-                    depot_idx = route[-1]
-                    # Get travel time from last stop to depot
-                    last_idx = route[-2]  # Index of the last stop before returning to depot
-                    travel_time = st.session_state.duration_matrix[last_idx][depot_idx] / 60  # Convert seconds to minutes
-                    cumulative_time += travel_time
+                    # Create PDF
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", size=16)
+                    pdf.cell(0, 10, "Route Optimization Report", ln=True, align='C')
+                    pdf.ln(5)
                     
-                    return_time = start_time + timedelta(minutes=cumulative_time)
+                    # Add generation date
+                    pdf.set_font("Arial", size=10)
+                    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+                    pdf.ln(5)
                     
-                    depot_data = st.session_state.df.iloc[0:1].copy()
-                    depot_data['Stop'] = len(route)-1
-                    depot_data['Type'] = 'Depot Return'
-                    depot_data['Arrival'] = return_time.strftime('%H:%M')
-                    depot_data['Departure'] = '-'
-                    route_df = pd.concat([route_df, depot_data], ignore_index=True)
+                    # Add summary
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.cell(0, 10, "Summary", ln=True)
+                    pdf.set_font("Arial", size=10)
+                    
+                    total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+                    active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+                    
+                    pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
+                    pdf.cell(0, 8, f"Active Vehicles: {active_vehicles} out of {num_vehicles}", ln=True)
+                    pdf.cell(0, 8, f"Optimization Objective: {optimize_for}", ln=True)
+                    pdf.ln(5)
+                    
+                    # Add routes
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.cell(0, 10, "Route Details", ln=True)
+                    pdf.set_font("Arial", size=10)
+                    
+                    for vehicle_id, route in st.session_state.optimized_routes.items():
+                        if len(route) <= 2:
+                            continue
+                        
+                        pdf.ln(3)
+                        pdf.set_font("Arial", 'B', 11)
+                        pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
+                        pdf.set_font("Arial", size=9)
+                        
+                        for i, location_idx in enumerate(route[1:-1], 1):
+                            stop_idx = location_idx - 1
+                            row = st.session_state.df.iloc[stop_idx]
+                            pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
+                    
+                    # Output PDF
+                    pdf_output = pdf.output(dest='S').encode('latin1')
+                    
+                    st.download_button(
+                        label="💾 Download PDF Report",
+                        data=pdf_output,
+                        file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                        mime="application/pdf"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating PDF: {e}")
+                    st.info("Make sure fpdf is installed: pip install fpdf")
+
+# Add a footer with optimization statistics
+if st.session_state.optimized_routes:
+    st.divider()
+    
+    # Calculate statistics
+    total_distance = 0
+    total_stops = 0
+    for vehicle_id, route in st.session_state.optimized_routes.items():
+        if len(route) > 2:
+            route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
+            total_distance += route_distance
+            total_stops += len(route) - 2
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Distance", f"{total_distance/1000:.1f} km")
+    with col2:
+        st.metric("Total Stops", total_stops)
+    with col3:
+        active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+        st.metric("Active Vehicles", f"{active_vehicles}/{num_vehicles}")
+    with col4:
+        avg_stops = total_stops / active_vehicles if active_vehicles > 0 else 0
+        st.metric("Avg Stops/Vehicle", f"{avg_stops:.1f}")
