@@ -47,6 +47,7 @@ class RouteOptimizer:
         self.priorities = None
         self.priority_weights = 0
         self.objective = "distance"  # Default objective
+        self.time_dimension_added = False  # Track if time dimension has been added
     
     def _register_distance_callback(self):
         """Register the distance callback for the routing model."""
@@ -85,6 +86,7 @@ class RouteOptimizer:
             "Time"
         )
         
+        self.time_dimension_added = True
         time_dimension = self.routing.GetDimensionOrDie("Time")
         
         # Add time window constraints
@@ -105,7 +107,8 @@ class RouteOptimizer:
         """
         self.service_times = service_times
         
-        if "Time" not in [dim.name() for dim in self.routing.GetDimensions()]:
+        # Check if time dimension has been added
+        if not self.time_dimension_added:
             raise ValueError("Must call set_time_windows before set_service_times")
         
         time_dimension = self.routing.GetDimensionOrDie("Time")
