@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import openai
+# import openai  # Commented out OpenAI
 import folium
 from streamlit_folium import folium_static
 import io
@@ -78,7 +78,187 @@ def validate_delivery_data(df):
         try:
             for idx, row in df.iterrows():
                 if pd.notna(row['Time Window Start']) and pd.notna(row['Time Window End']):
-                    start_parts = str(row['Time Window Start']).split(':')
+                
+                # Calculate the total distance for this route
+                route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
+                
+                # Create a nicer table for display
+                display_cols = ['Stop', 'Type', 'Name', 'Address', 'Arrival', 'Departure']
+                if 'Priority' in route_df.columns:
+                    display_cols.append('Priority')
+                if 'Package Size' in route_df.columns:
+                    display_cols.append('Package Size')
+                
+                st.dataframe(route_df[display_cols], use_container_width=True)
+                
+                st.info(f"📏 Total Distance: {route_distance/1000:.2f} km  |  ⏱️ Estimated Duration: {cumulative_time:.0f} minutes")
+    
+    with tab2:
+        # Display the interactive map
+        if st.session_state.map_html:
+            import streamlit.components.v1 as components
+            components.html(st.session_state.map_html, height=600)
+        else:
+            st.info("Map visualization will appear here after optimization.")
+    
+    with tab3:
+        # Display the summary
+        if st.session_state.ai_explanation:
+            st.markdown("### 📊 Route Optimization Summary")
+            st.markdown(st.session_state.ai_explanation)
+        else:
+            st.info("Summary will appear here after optimization.")
+    
+    with tab4:
+        # Export options
+        st.markdown("### 📥 Export Options")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # Export routes as CSV
+            if st.button("📊 Export Routes as CSV", use_container_width=True):
+                # Create a CSV with all route information
+                all_routes_data = []
+                
+                for vehicle_id, route in st.session_state.optimized_routes.items():
+                    if len(route) <= 2:  # Skip empty routes
+                        continue
+                    
+                    for i, location_idx in enumerate(route):
+                        if location_idx == 0:  # Depot
+                            if i == 0:
+                                stop_type = "Start (Depot)"
+                            else:
+                                stop_type = "End (Depot)"
+                            row_data = {
+                                'Vehicle': vehicle_id + 1,
+                                'Stop_Number': i,
+                                'Stop_Type': stop_type,
+                                'Location': 'Depot',
+                                'Name': 'Depot',
+                                'Address': 'Depot Location'
+                            }
+                        else:
+                            stop_idx = location_idx - 1
+                            row = st.session_state.df.iloc[stop_idx]
+                            row_data = {
+                                'Vehicle': vehicle_id + 1,
+                                'Stop_Number': i,
+                                'Stop_Type': 'Delivery',
+                                'Location': location_idx,
+                                'Name': row['Name'],
+                                'Address': row.get('Address', 'N/A'),
+                                'Latitude': row['Latitude'],
+                                'Longitude': row['Longitude'],
+                                'Priority': row.get('Priority', 'N/A'),
+                                'Package_Size': row.get('Package Size', 'N/A'),
+                                'Time_Window_Start': row.get('Time Window Start', 'N/A'),
+                                'Time_Window_End': row.get('Time Window End', 'N/A'),
+                                'Service_Time': row.get('Service Time (min)', 'N/A')
+                            }
+                        
+                        all_routes_data.append(row_data)
+                
+                # Convert to DataFrame and download
+                routes_df = pd.DataFrame(all_routes_data)
+                csv = routes_df.to_csv(index=False)
+                
+                st.download_button(
+                    label="💾 Download Routes CSV",
+                    data=csv,
+                    file_name=f"optimized_routes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                    mime="text/csv"
+                )
+        
+        with col2:
+            # Generate PDF report
+            if st.button("📄 Generate PDF Report", use_container_width=True):
+                try:
+                    from fpdf import FPDF
+                    
+                    # Create PDF
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_font("Arial", size=16)
+                    pdf.cell(0, 10, "Route Optimization Report", ln=True, align='C')
+                    pdf.ln(5)
+                    
+                    # Add generation date
+                    pdf.set_font("Arial", size=10)
+                    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+                    pdf.ln(5)
+                    
+                    # Add summary
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.cell(0, 10, "Summary", ln=True)
+                    pdf.set_font("Arial", size=10)
+                    
+                    total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+                    active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+                    
+                    pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
+                    pdf.cell(0, 8, f"Active Vehicles: {active_vehicles} out of {num_vehicles}", ln=True)
+                    pdf.cell(0, 8, f"Optimization Objective: {optimize_for}", ln=True)
+                    pdf.ln(5)
+                    
+                    # Add routes
+                    pdf.set_font("Arial", 'B', 12)
+                    pdf.cell(0, 10, "Route Details", ln=True)
+                    pdf.set_font("Arial", size=10)
+                    
+                    for vehicle_id, route in st.session_state.optimized_routes.items():
+                        if len(route) <= 2:
+                            continue
+                        
+                        pdf.ln(3)
+                        pdf.set_font("Arial", 'B', 11)
+                        pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
+                        pdf.set_font("Arial", size=9)
+                        
+                        for i, location_idx in enumerate(route[1:-1], 1):
+                            stop_idx = location_idx - 1
+                            row = st.session_state.df.iloc[stop_idx]
+                            pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
+                    
+                    # Output PDF
+                    pdf_output = pdf.output(dest='S').encode('latin1')
+                    
+                    st.download_button(
+                        label="💾 Download PDF Report",
+                        data=pdf_output,
+                        file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                        mime="application/pdf"
+                    )
+                    
+                except Exception as e:
+                    st.error(f"Error generating PDF: {e}")
+                    st.info("Make sure fpdf is installed: pip install fpdf")
+
+# Add a footer with optimization statistics
+if st.session_state.optimized_routes:
+    st.divider()
+    
+    # Calculate statistics
+    total_distance = 0
+    total_stops = 0
+    for vehicle_id, route in st.session_state.optimized_routes.items():
+        if len(route) > 2:
+            route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
+            total_distance += route_distance
+            total_stops += len(route) - 2
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Total Distance", f"{total_distance/1000:.1f} km")
+    with col2:
+        st.metric("Total Stops", total_stops)
+    with col3:
+        active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+        st.metric("Active Vehicles", f"{active_vehicles}/{num_vehicles}")
+    with col4:
+        avg_stops = total_stops / active_vehicles if active_vehicles > 0 else 0
+        st.metric("Avg Stops/Vehicle", f"{avg_stops:.1f}")start_parts = str(row['Time Window Start']).split(':')
                     end_parts = str(row['Time Window End']).split(':')
                     
                     if len(start_parts) != 2 or len(end_parts) != 2:
@@ -105,15 +285,16 @@ def validate_api_keys(openai_key, graphhopper_key=None):
     """Validate API keys before using them."""
     errors = []
     
-    # Validate OpenAI key
-    if not openai_key:
-        errors.append("OpenAI API key is required")
-    elif not openai_key.startswith('sk-'):
-        errors.append("OpenAI API key should start with 'sk-'")
+    # COMMENTED OUT - No API key validation needed
+    # # Validate OpenAI key
+    # if not openai_key:
+    #     errors.append("OpenAI API key is required")
+    # elif not openai_key.startswith('sk-'):
+    #     errors.append("OpenAI API key should start with 'sk-'")
     
-    # Validate GraphHopper key if provided
-    if graphhopper_key and len(graphhopper_key) < 10:
-        errors.append("GraphHopper API key seems too short")
+    # # Validate GraphHopper key if provided
+    # if graphhopper_key and len(graphhopper_key) < 10:
+    #     errors.append("GraphHopper API key seems too short")
     
     return errors
 
@@ -136,47 +317,53 @@ def generate_csv_template():
 
 # Set up the page header and information
 st.title("🚚 Final Mile AI Planner")
-st.caption("🧠 Combines OR-Tools optimization + GenAI explanations with OpenStreetMap")
+st.caption("🧠 Route optimization using OR-Tools (AI and GraphHopper features temporarily disabled)")
 
 # Create sidebar for settings and configurations
 with st.sidebar:
     st.header("Settings")
     
-    api_option = st.radio("OpenAI API Key", ["Use from secrets.toml", "Enter API Key"], 
-                         help="Choose where to get the OpenAI API key")
+    # COMMENTED OUT OpenAI settings
+    # api_option = st.radio("OpenAI API Key", ["Use from secrets.toml", "Enter API Key"], 
+    #                      help="Choose where to get the OpenAI API key")
     
-    if api_option == "Enter API Key":
-        openai_api_key = st.text_input("OpenAI API Key", type="password")
-    else:
-        try:
-            openai_api_key = st.secrets["OPENAI_API_KEY"]
-        except:
-            openai_api_key = ""
-            st.warning("No API key found in secrets.toml")
+    # if api_option == "Enter API Key":
+    #     openai_api_key = st.text_input("OpenAI API Key", type="password")
+    # else:
+    #     try:
+    #         openai_api_key = st.secrets["OPENAI_API_KEY"]
+    #     except:
+    #         openai_api_key = ""
+    #         st.warning("No API key found in secrets.toml")
     
-    openai_model = st.selectbox(
-        "OpenAI Model",
-        ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
-        index=0
-    )
+    # openai_model = st.selectbox(
+    #     "OpenAI Model",
+    #     ["gpt-3.5-turbo", "gpt-4", "gpt-4-turbo"],
+    #     index=0
+    # )
+    
+    st.info("📌 AI explanations are temporarily disabled")
 
-    # Add distance calculation options
-    st.subheader("Distance Calculation")
-    use_graphhopper = st.checkbox("Use GraphHopper for real-world distances", value=True, 
-                               help="If checked, will use GraphHopper API for accurate distances")
+    # COMMENTED OUT GraphHopper settings
+    # # Add distance calculation options
+    # st.subheader("Distance Calculation")
+    # use_graphhopper = st.checkbox("Use GraphHopper for real-world distances", value=True, 
+    #                            help="If checked, will use GraphHopper API for accurate distances")
     
-    if use_graphhopper:
-        graphhopper_option = st.radio("GraphHopper API Key", ["Use from secrets.toml", "Enter API Key"], 
-                                  help="Choose where to get the GraphHopper API key")
+    # if use_graphhopper:
+    #     graphhopper_option = st.radio("GraphHopper API Key", ["Use from secrets.toml", "Enter API Key"], 
+    #                               help="Choose where to get the GraphHopper API key")
         
-        if graphhopper_option == "Enter API Key":
-            graphhopper_api_key = st.text_input("GraphHopper API Key", type="password")
-        else:
-            try:
-                graphhopper_api_key = st.secrets["GRAPHHOPPER_API_KEY"]
-            except:
-                graphhopper_api_key = ""
-                st.warning("No GraphHopper API key found in secrets.toml")
+    #     if graphhopper_option == "Enter API Key":
+    #         graphhopper_api_key = st.text_input("GraphHopper API Key", type="password")
+    #     else:
+    #         try:
+    #             graphhopper_api_key = st.secrets["GRAPHHOPPER_API_KEY"]
+    #         except:
+    #             graphhopper_api_key = ""
+    #             st.warning("No GraphHopper API key found in secrets.toml")
+    
+    st.info("📌 Using Euclidean (straight-line) distances")
     
     st.subheader("Sample Data")
     col1, col2 = st.columns(2)
@@ -332,7 +519,7 @@ with col1:
         cols = st.columns(min(num_vehicles, 4))
         for i in range(num_vehicles):
             with cols[i % 4]:
-                capacity = st.number_input(f"Vehicle {i+1}", min_value=1, max_value=100, value=5)
+                capacity = st.number_input(f"Vehicle {i+1}", min_value=1, max_value=100, value=5, key=f"vehicle_capacity_{i}")
                 vehicle_capacities.append(capacity)
 
 with col2:
@@ -360,280 +547,202 @@ with col2:
         help="Select the main optimization objective"
     )
 
-# Additional constraints text area
+# Additional constraints text area - FIXED EMPTY LABEL
 st.write("Additional Constraints (Free Text for AI Context)")
 additional_constraints = st.text_area(
-    "",
+    "Enter additional constraints",
     value="Avoid left turns when possible\nMaximize driver breaks during waiting times\nConsider traffic patterns",
-    help="These constraints will be used for AI context but not directly in the optimization algorithm"
+    help="These constraints will be used for AI context but not directly in the optimization algorithm",
+    label_visibility="collapsed"
 )
 
 # Run the optimization
-if st.button("🧠 Optimize Routes & Generate AI Explanation", use_container_width=True):
+if st.button("🧠 Optimize Routes", use_container_width=True):
     # Check if data is loaded
     if st.session_state.df is None:
         st.error("Please upload or load sample data first")
     else:
-        # Validate API keys
-        api_errors = validate_api_keys(openai_api_key, graphhopper_api_key if use_graphhopper else None)
-        if api_errors:
-            st.error("API Key Issues:")
-            for error in api_errors:
-                st.write(f"❌ {error}")
-        else:
-            with st.spinner("Processing data and calculating distances..."):
-                # Handle the case where lat/long might be missing
-                processor = DataProcessor()
-                
-                # If lat/long are missing but address is available, geocode the addresses
-                if ('Latitude' not in st.session_state.df.columns or 'Longitude' not in st.session_state.df.columns) and 'Address' in st.session_state.df.columns:
-                    st.info("Geocoding addresses to get coordinates...")
-                    df_with_coords = processor.geocode_addresses(st.session_state.df)
-                    if df_with_coords is not None:
-                        st.session_state.df = df_with_coords
-                    else:
-                        st.error("Failed to geocode addresses. Please provide a CSV with Latitude and Longitude columns.")
-                        st.stop()
-                
-                # Ensure required columns exist with default values if missing
-                st.session_state.df = processor.ensure_required_columns(st.session_state.df)
-                
-                # Calculate distance matrix
-                try:
-                    # Add depot to the beginning of locations if needed
-                    if depot_option == "Enter depot coordinates manually":                       
-                        locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                    else:
-                        locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+        # SKIP API validation since we're not using APIs
+        # api_errors = validate_api_keys(openai_api_key, graphhopper_api_key if use_graphhopper else None)
         
-                    if use_graphhopper and graphhopper_api_key:
-                        st.info("Calculating real-world distances using GraphHopper API...")     
-                        distance_matrix, duration_matrix = processor.calculate_graphhopper_distance_matrix(locations, graphhopper_api_key)
-                        st.session_state.distance_matrix = distance_matrix
-                        st.session_state.duration_matrix = duration_matrix
-                        st.success("✅ GraphHopper distance calculation successful")
-                    else:
-                        st.info("Using straight-line distances (GraphHopper API not used)...")
-                        distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
-                        duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
-                        st.session_state.distance_matrix = distance_matrix
-                        st.session_state.duration_matrix = duration_matrix
-                except Exception as e:
-                    st.error(f"Error calculating distances: {e}")
-                    st.info("Falling back to straight-line distances...")
-                
-                    # Fall back to Euclidean distances
-                    if depot_option == "Enter depot coordinates manually":
-                        all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                    else:
-                        all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-        
-                    distance_matrix = processor.calculate_euclidean_distance_matrix(all_locations)
-                    duration_matrix = distance_matrix * 0.12  # Simple time estimation
-                    st.session_state.distance_matrix = distance_matrix
-                    st.session_state.duration_matrix = duration_matrix
-
-                # Initialize the route optimizer
-                optimizer = RouteOptimizer(
-                    distance_matrix=st.session_state.distance_matrix,
-                    duration_matrix=st.session_state.duration_matrix,
-                    num_vehicles=num_vehicles,
-                    depot=0,  # Assuming depot is always the first location
-                    vehicle_capacities=vehicle_capacities  # Pass capacities directly to constructor
-                )
-                
-                # Prepare time windows if available
-                time_windows = []
-                if all(col in st.session_state.df.columns for col in ['Time Window Start', 'Time Window End']):
-                    # Convert time strings to minutes since midnight
-                    for _, row in st.session_state.df.iterrows():
-                        try:
-                            start_parts = row['Time Window Start'].split(':')
-                            end_parts = row['Time Window End'].split(':')
-                            
-                            start_minutes = int(start_parts[0]) * 60 + int(start_parts[1])
-                            end_minutes = int(end_parts[0]) * 60 + int(end_parts[1])
-                            
-                            time_windows.append((start_minutes, end_minutes))
-                        except:
-                            # Use wide time window if parsing fails
-                            time_windows.append((0, 24 * 60))
+        with st.spinner("Processing data and calculating distances..."):
+            # Handle the case where lat/long might be missing
+            processor = DataProcessor()
+            
+            # If lat/long are missing but address is available, geocode the addresses
+            if ('Latitude' not in st.session_state.df.columns or 'Longitude' not in st.session_state.df.columns) and 'Address' in st.session_state.df.columns:
+                st.info("Geocoding addresses to get coordinates...")
+                df_with_coords = processor.geocode_addresses(st.session_state.df)
+                if df_with_coords is not None:
+                    st.session_state.df = df_with_coords
                 else:
-                    # Default time windows (all day: 0 to 24 hours in minutes)
-                    time_windows = [(0, 24 * 60) for _ in range(len(st.session_state.df))]
-                
-                # Add depot time window (assume 24h operation for depot)
-                time_windows.insert(0, (0, 24 * 60))
-                
-                # Prepare service times
-                service_times = []
-                if 'Service Time (min)' in st.session_state.df.columns:
-                    service_times = st.session_state.df['Service Time (min)'].fillna(0).astype(int).tolist()
-                else:
-                    service_times = [15 for _ in range(len(st.session_state.df))]  # Default 15 minutes
-                
-                # Add zero service time for depot
-                service_times.insert(0, 0)
-                
-                # Prepare priorities
-                priorities = []
-                if 'Priority' in st.session_state.df.columns:
-                    priority_map = {'High': 3, 'Medium': 2, 'Low': 1}
-                    priorities = [priority_map.get(p, 1) for p in st.session_state.df['Priority'].fillna('Low')]
-                else:
-                    priorities = [1 for _ in range(len(st.session_state.df))]  # Default priority
-                
-                # Add priority for depot (not used, but needs to match dimensions)
-                priorities.insert(0, 0)
-                
-                # Set the parameters for the optimizer
-                optimizer.set_time_windows(time_windows)
-                optimizer.set_service_times(service_times)
-                optimizer.set_priorities(priorities, priority_weights)
-                
-                # Choose the optimization strategy based on user selection
-                if optimize_for == "Minimize Total Distance":
-                    optimizer.set_objective_minimize_total_distance()
-                elif optimize_for == "Minimize Max Route Length":
-                    optimizer.set_objective_minimize_max_route()
-                else:  # "Balance Routes"
-                    optimizer.set_objective_balance_routes()
-                
-                # Solve the optimization problem
-                try:
-                    solution = optimizer.solve()
-                    if solution:
-                        st.session_state.optimized_routes = solution
-                    else:
-                        st.error("Could not find a solution. Try relaxing some constraints.")
-                        st.stop()
-                except Exception as e:
-                    st.error(f"Optimization error: {e}")
+                    st.error("Failed to geocode addresses. Please provide a CSV with Latitude and Longitude columns.")
                     st.stop()
             
-            # Process the solution for display
-            with st.spinner("Generating visualizations and AI explanation..."):
-                if st.session_state.optimized_routes:
-                    # Generate the map visualization
-                    visualizer = MapVisualizer()
-                    
-                    # Extract locations for the map
-                    if depot_option == "Enter depot coordinates manually":
-                        all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                    else:
-                        all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                    
-                    # Generate map with the routes
+            # Ensure required columns exist with default values if missing
+            st.session_state.df = processor.ensure_required_columns(st.session_state.df)
+            
+            # Calculate distance matrix
+            try:
+                # Add depot to the beginning of locations if needed
+                if depot_option == "Enter depot coordinates manually":                       
+                    locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                else:
+                    locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                
+                # Validate locations
+                if not locations or any(None in loc for loc in locations):
+                    st.error("Invalid location data. Please check your coordinates.")
+                    st.stop()
+                
+                # ALWAYS use Euclidean distances now
+                st.info("Using straight-line distances...")
+                distance_matrix = processor.calculate_euclidean_distance_matrix(locations)
+                duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
+                st.session_state.distance_matrix = distance_matrix
+                st.session_state.duration_matrix = duration_matrix
+                
+            except Exception as e:
+                st.error(f"Error calculating distances: {e}")
+                st.stop()
+
+            # Initialize the route optimizer
+            optimizer = RouteOptimizer(
+                distance_matrix=st.session_state.distance_matrix,
+                duration_matrix=st.session_state.duration_matrix,
+                num_vehicles=num_vehicles,
+                depot=0,  # Assuming depot is always the first location
+                vehicle_capacities=vehicle_capacities  # Pass capacities directly to constructor
+            )
+            
+            # Prepare time windows if available
+            time_windows = []
+            if all(col in st.session_state.df.columns for col in ['Time Window Start', 'Time Window End']):
+                # Convert time strings to minutes since midnight
+                for _, row in st.session_state.df.iterrows():
                     try:
-                        folium_map = visualizer.create_route_map(
-                            st.session_state.optimized_routes,
-                            all_locations,
-                            df=st.session_state.df
-                        )
-                        # Save the map HTML for later use
-                        st.session_state.map_html = folium_map._repr_html_()
-                    except Exception as e:
-                        st.error(f"Error creating map: {e}")
-                        st.session_state.map_html = None
+                        start_parts = row['Time Window Start'].split(':')
+                        end_parts = row['Time Window End'].split(':')
+                        
+                        start_minutes = int(start_parts[0]) * 60 + int(start_parts[1])
+                        end_minutes = int(end_parts[0]) * 60 + int(end_parts[1])
+                        
+                        time_windows.append((start_minutes, end_minutes))
+                    except:
+                        # Use wide time window if parsing fails
+                        time_windows.append((0, 24 * 60))
+            else:
+                # Default time windows (all day: 0 to 24 hours in minutes)
+                time_windows = [(0, 24 * 60) for _ in range(len(st.session_state.df))]
+            
+            # Add depot time window (assume 24h operation for depot)
+            time_windows.insert(0, (0, 24 * 60))
+            
+            # Prepare service times
+            service_times = []
+            if 'Service Time (min)' in st.session_state.df.columns:
+                service_times = st.session_state.df['Service Time (min)'].fillna(0).astype(int).tolist()
+            else:
+                service_times = [15 for _ in range(len(st.session_state.df))]  # Default 15 minutes
+            
+            # Add zero service time for depot
+            service_times.insert(0, 0)
+            
+            # Prepare priorities
+            priorities = []
+            if 'Priority' in st.session_state.df.columns:
+                priority_map = {'High': 3, 'Medium': 2, 'Low': 1}
+                priorities = [priority_map.get(p, 1) for p in st.session_state.df['Priority'].fillna('Low')]
+            else:
+                priorities = [1 for _ in range(len(st.session_state.df))]  # Default priority
+            
+            # Add priority for depot (not used, but needs to match dimensions)
+            priorities.insert(0, 0)
+            
+            # Set the parameters for the optimizer
+            optimizer.set_time_windows(time_windows)
+            optimizer.set_service_times(service_times)
+            optimizer.set_priorities(priorities, priority_weights)
+            
+            # Choose the optimization strategy based on user selection
+            if optimize_for == "Minimize Total Distance":
+                optimizer.set_objective_minimize_total_distance()
+            elif optimize_for == "Minimize Max Route Length":
+                optimizer.set_objective_minimize_max_route()
+            else:  # "Balance Routes"
+                optimizer.set_objective_balance_routes()
+            
+            # Solve the optimization problem
+            try:
+                solution = optimizer.solve()
+                if solution:
+                    st.session_state.optimized_routes = solution
+                else:
+                    st.error("Could not find a solution. Try relaxing some constraints.")
+                    st.stop()
+            except Exception as e:
+                st.error(f"Optimization error: {e}")
+                st.stop()
+        
+        # Process the solution for display
+        with st.spinner("Generating visualizations..."):
+            if st.session_state.optimized_routes:
+                # Generate the map visualization
+                visualizer = MapVisualizer()
+                
+                # Extract locations for the map
+                if depot_option == "Enter depot coordinates manually":
+                    all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                else:
+                    all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                
+                # Generate map with the routes
+                try:
+                    folium_map = visualizer.create_route_map(
+                        st.session_state.optimized_routes,
+                        all_locations,
+                        df=st.session_state.df
+                    )
+                    # Save the map HTML for later use
+                    st.session_state.map_html = folium_map._repr_html_()
+                except Exception as e:
+                    st.error(f"Error creating map: {e}")
+                    st.session_state.map_html = None
+                
+                # SKIP AI explanation - just set a placeholder
+                st.session_state.ai_explanation = """
+                ## Route Optimization Summary
+                
+                The routes have been optimized based on your selected criteria. 
+                
+                ### Key Benefits:
+                - Routes are organized to minimize travel distance
+                - Deliveries are grouped efficiently by geographic proximity
+                - Time windows and priorities have been considered
+                - Vehicle capacities are respected
+                
+                ### Notes:
+                - This optimization uses straight-line distances
+                - AI-powered explanations are temporarily disabled
+                - Consider real-world factors like traffic and road conditions
+                """
                     
-                    # Generate AI explanation
-                    try:
-                        # Create a summary of the optimization results
-                        routes_summary = []
-                        total_distance = 0
-                        max_route_length = 0
-                        for vehicle_id, route in st.session_state.optimized_routes.items():
-                            # Skip empty routes
-                            if len(route) <= 2:  # Just depot-depot
-                                continue
-                                
-                            route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-                            total_distance += route_distance
-                            max_route_length = max(max_route_length, route_distance)
-                            
-                            # Create a list of stops on this route
-                            stops = []
-                            for location_idx in route[1:-1]:  # Skip depot at start and end
-                                stop_idx = location_idx - 1  # Adjust for depot offset
-                                row = st.session_state.df.iloc[stop_idx]
-                                
-                                stop_info = {
-                                    'ID': row['ID'],
-                                    'Name': row['Name'],
-                                    'Address': row.get('Address', 'N/A'),
-                                    'Priority': row.get('Priority', 'N/A'),
-                                    'Time Window': f"{row.get('Time Window Start', 'N/A')} - {row.get('Time Window End', 'N/A')}",
-                                    'Service Time': f"{row.get('Service Time (min)', 'N/A')} minutes"
-                                }
-                                stops.append(stop_info)
-                            
-                            routes_summary.append({
-                                'Vehicle': vehicle_id + 1,
-                                'Stops': len(stops),
-                                'Distance': f"{route_distance/1000:.2f} km",
-                                'Stops_List': stops
-                            })
-                        
-                        # Create the prompt for the AI explanation
-                        prompt = f"""You are a logistics expert. Explain the following optimized delivery routes in business-friendly terms.
-Focus on efficiency, customer service benefits, and practical advantages for drivers.
-
-Optimization Parameters:
-- Number of Vehicles: {num_vehicles}
-- Vehicle Capacities: {vehicle_capacities}
-- Priority Importance (0-10): {priority_weights}
-- Time Window Strictness: {time_window_strictness}
-- Optimization Objective: {optimize_for}
-- Additional Constraints: {additional_constraints}
-
-Routes Summary:
-Total Distance: {total_distance/1000:.2f} km
-Max Route Length: {max_route_length/1000:.2f} km
-Number of Routes: {len([r for r in routes_summary if len(r['Stops_List']) > 0])}
-
-Detailed Routes:
-{json.dumps(routes_summary, indent=2)}
-
-Your explanation should:
-1. Highlight the key benefits of this route plan
-2. Explain how the routes respect the constraints
-3. Provide insights on the balance between vehicles
-4. Mention any special considerations for drivers
-5. Suggest potential improvements for future routes
-
-Keep your explanation clear, practical, and focused on business value."""
-
-                        # Call OpenAI
-                        client = openai.OpenAI(api_key=openai_api_key)
-                        
-                        response = client.chat.completions.create(
-                            model=openai_model,
-                            messages=[{"role": "user", "content": prompt}],
-                            temperature=0.4
-                        )
-                        
-                        st.session_state.ai_explanation = response.choices[0].message.content
-                        
-                    except Exception as e:
-                        st.error(f"Error generating AI explanation: {e}")
-                        st.session_state.ai_explanation = "Could not generate AI explanation. Please check your OpenAI API key and try again."
-                        
-                    # Save the parameters used for this run
-                    st.session_state.last_run_params = {
-                        "num_vehicles": num_vehicles,
-                        "vehicle_capacities": vehicle_capacities,
-                        "priority_weights": priority_weights,
-                        "time_window_strictness": time_window_strictness,
-                        "optimize_for": optimize_for,
-                        "additional_constraints": additional_constraints
-                    }
+                # Save the parameters used for this run
+                st.session_state.last_run_params = {
+                    "num_vehicles": num_vehicles,
+                    "vehicle_capacities": vehicle_capacities,
+                    "priority_weights": priority_weights,
+                    "time_window_strictness": time_window_strictness,
+                    "optimize_for": optimize_for,
+                    "additional_constraints": additional_constraints
+                }
 
 # Display the results if available
 if st.session_state.optimized_routes:
     st.subheader("4️⃣ Optimization Results")
     
     # Create tabs for different views
-    tab1, tab2, tab3, tab4 = st.tabs(["Routes Overview", "Interactive Map", "AI Explanation", "Export Options"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Routes Overview", "Interactive Map", "Summary", "Export Options"])
     
     with tab1:
         # Display a summary of each route
@@ -733,207 +842,3 @@ if st.session_state.optimized_routes:
                     depot_data['Arrival'] = return_time.strftime('%H:%M')
                     depot_data['Departure'] = '-'
                     route_df = pd.concat([route_df, depot_data], ignore_index=True)
-                
-                # Calculate the total distance for this route
-                route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-                
-                # Create a nicer table for display
-                display_cols = ['Stop', 'Type', 'Name', 'Address', 'Arrival', 'Departure']
-                if 'Priority' in route_df.columns:
-                    display_cols.append('Priority')
-                if 'Package Size' in route_df.columns:
-                    display_cols.append('Package Size')
-                
-                st.dataframe(route_df[display_cols], use_container_width=True)
-                
-                st.info(f"📏 Total Distance: {route_distance/1000:.2f} km  |  ⏱️ Estimated Duration: {cumulative_time:.0f} minutes")
-    
-    with tab2:
-        # Display the interactive map
-        if st.session_state.map_html:
-            import streamlit.components.v1 as components
-            components.html(st.session_state.map_html, height=600)
-        else:
-            st.info("Map visualization will appear here after optimization.")
-    
-    with tab3:
-        # Display the AI explanation
-        if st.session_state.ai_explanation:
-            st.markdown("### 🤖 AI Route Explanation")
-            st.markdown(st.session_state.ai_explanation)
-        else:
-            st.info("AI explanation will appear here after optimization.")
-    
-    with tab4:
-        # Export options
-        st.markdown("### 📥 Export Options")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Export routes as CSV
-            if st.button("📊 Export Routes as CSV", use_container_width=True):
-                # Create a CSV with all route information
-                all_routes_data = []
-                
-                for vehicle_id, route in st.session_state.optimized_routes.items():
-                    if len(route) <= 2:  # Skip empty routes
-                        continue
-                    
-                    for i, location_idx in enumerate(route):
-                        if location_idx == 0:  # Depot
-                            if i == 0:
-                                stop_type = "Start (Depot)"
-                            else:
-                                stop_type = "End (Depot)"
-                            row_data = {
-                                'Vehicle': vehicle_id + 1,
-                                'Stop_Number': i,
-                                'Stop_Type': stop_type,
-                                'Location': 'Depot',
-                                'Name': 'Depot',
-                                'Address': 'Depot Location'
-                            }
-                        else:
-                            stop_idx = location_idx - 1
-                            row = st.session_state.df.iloc[stop_idx]
-                            row_data = {
-                                'Vehicle': vehicle_id + 1,
-                                'Stop_Number': i,
-                                'Stop_Type': 'Delivery',
-                                'Location': location_idx,
-                                'Name': row['Name'],
-                                'Address': row.get('Address', 'N/A'),
-                                'Latitude': row['Latitude'],
-                                'Longitude': row['Longitude'],
-                                'Priority': row.get('Priority', 'N/A'),
-                                'Package_Size': row.get('Package Size', 'N/A'),
-                                'Time_Window_Start': row.get('Time Window Start', 'N/A'),
-                                'Time_Window_End': row.get('Time Window End', 'N/A'),
-                                'Service_Time': row.get('Service Time (min)', 'N/A')
-                            }
-                        
-                        all_routes_data.append(row_data)
-                
-                # Convert to DataFrame and download
-                routes_df = pd.DataFrame(all_routes_data)
-                csv = routes_df.to_csv(index=False)
-                
-                st.download_button(
-                    label="💾 Download Routes CSV",
-                    data=csv,
-                    file_name=f"optimized_routes_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
-                    mime="text/csv"
-                )
-        
-        with col2:
-            # Generate PDF report
-            if st.button("📄 Generate PDF Report", use_container_width=True):
-                try:
-                    from fpdf import FPDF
-                    
-                    # Create PDF
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=16)
-                    pdf.cell(0, 10, "AI Route Optimization Report", ln=True, align='C')
-                    pdf.ln(5)
-                    
-                    # Add generation date
-                    pdf.set_font("Arial", size=10)
-                    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add summary
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Summary", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    
-                    pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
-                    pdf.cell(0, 8, f"Active Vehicles: {active_vehicles} out of {num_vehicles}", ln=True)
-                    pdf.cell(0, 8, f"Optimization Objective: {optimize_for}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add routes
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Route Details", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    for vehicle_id, route in st.session_state.optimized_routes.items():
-                        if len(route) <= 2:
-                            continue
-                        
-                        pdf.ln(3)
-                        pdf.set_font("Arial", 'B', 11)
-                        pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
-                        pdf.set_font("Arial", size=9)
-                        
-                        for i, location_idx in enumerate(route[1:-1], 1):
-                            stop_idx = location_idx - 1
-                            row = st.session_state.df.iloc[stop_idx]
-                            pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
-                    
-                    # Add AI explanation if available
-                    if st.session_state.ai_explanation:
-                        pdf.add_page()
-                        pdf.set_font("Arial", 'B', 12)
-                        pdf.cell(0, 10, "AI Analysis", ln=True)
-                        pdf.set_font("Arial", size=10)
-                        
-                        # Split explanation into lines to fit PDF
-                        lines = st.session_state.ai_explanation.split('\n')
-                        for line in lines:
-                            if line.strip():
-                                # Handle long lines
-                                words = line.split(' ')
-                                current_line = ""
-                                for word in words:
-                                    if pdf.get_string_width(current_line + word) < 180:
-                                        current_line += word + " "
-                                    else:
-                                        pdf.cell(0, 6, current_line.strip(), ln=True)
-                                        current_line = word + " "
-                                if current_line:
-                                    pdf.cell(0, 6, current_line.strip(), ln=True)
-                    
-                    # Output PDF
-                    pdf_output = pdf.output(dest='S').encode('latin1')
-                    
-                    st.download_button(
-                        label="💾 Download PDF Report",
-                        data=pdf_output,
-                        file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
-                    )
-                    
-                except Exception as e:
-                    st.error(f"Error generating PDF: {e}")
-                    st.info("Make sure fpdf is installed: pip install fpdf")
-
-# Add a footer with optimization statistics
-if st.session_state.optimized_routes:
-    st.divider()
-    
-    # Calculate statistics
-    total_distance = 0
-    total_stops = 0
-    for vehicle_id, route in st.session_state.optimized_routes.items():
-        if len(route) > 2:
-            route_distance = sum(st.session_state.distance_matrix[route[i]][route[i+1]] for i in range(len(route)-1))
-            total_distance += route_distance
-            total_stops += len(route) - 2
-    
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Distance", f"{total_distance/1000:.1f} km")
-    with col2:
-        st.metric("Total Stops", total_stops)
-    with col3:
-        active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-        st.metric("Active Vehicles", f"{active_vehicles}/{num_vehicles}")
-    with col4:
-        avg_stops = total_stops / active_vehicles if active_vehicles > 0 else 0
-        st.metric("Avg Stops/Vehicle", f"{avg_stops:.1f}")
