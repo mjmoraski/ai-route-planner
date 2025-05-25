@@ -14,7 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import base64
 from PIL import Image
-from fpdf import FPDF
+from fpdf2 import FPDF  # Changed from fpdf to fpdf2
 
 # Import custom modules
 from route_optimizer import RouteOptimizer
@@ -345,10 +345,12 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
             
             # Calculate distance matrix
             try:
-                # Add depot to the beginning of locations if needed
-                if depot_option == "Enter depot coordinates manually":                       
+                # IMPORTANT: Always include depot as first location
+                if depot_option == "Enter depot coordinates manually":
+                    # Manual depot + all data rows
                     locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
                 else:
+                    # Use first row as depot, don't duplicate it
                     locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
                 
                 # Validate locations
@@ -362,6 +364,9 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
                 duration_matrix = distance_matrix * 0.12  # Simple time estimation (30 km/h)
                 st.session_state.distance_matrix = distance_matrix
                 st.session_state.duration_matrix = duration_matrix
+                
+                # Debug info
+                st.write(f"Debug: {len(locations)} locations, matrix shape: {distance_matrix.shape}")
                 
             except Exception as e:
                 st.error(f"Error calculating distances: {e}")
@@ -379,11 +384,16 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
             # Prepare time windows if available
             time_windows = []
             if all(col in st.session_state.df.columns for col in ['Time Window Start', 'Time Window End']):
-                # Convert time strings to minutes since midnight
+                # IMPORTANT: Adjust based on depot option
+                if depot_option == "Enter depot coordinates manually":
+                    # Add depot time window first
+                    time_windows.append((0, 24 * 60))  # 24h operation for depot
+                
+                # Add time windows for all data rows
                 for _, row in st.session_state.df.iterrows():
                     try:
-                        start_parts = row['Time Window Start'].split(':')
-                        end_parts = row['Time Window End'].split(':')
+                        start_parts = str(row['Time Window Start']).split(':')
+                        end_parts = str(row['Time Window End']).split(':')
                         
                         start_minutes = int(start_parts[0]) * 60 + int(start_parts[1])
                         end_minutes = int(end_parts[0]) * 60 + int(end_parts[1])
@@ -393,32 +403,39 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
                         # Use wide time window if parsing fails
                         time_windows.append((0, 24 * 60))
             else:
-                # Default time windows (all day: 0 to 24 hours in minutes)
-                time_windows = [(0, 24 * 60) for _ in range(len(st.session_state.df))]
+                # Default time windows - match the number of locations
+                time_windows = [(0, 24 * 60) for _ in range(len(locations))]
             
-            # Add depot time window (assume 24h operation for depot)
-            time_windows.insert(0, (0, 24 * 60))
+            # Debug: Check time windows count
+            st.write(f"Debug: {len(time_windows)} time windows for {len(locations)} locations")
             
             # Prepare service times
             service_times = []
-            if 'Service Time (min)' in st.session_state.df.columns:
-                service_times = st.session_state.df['Service Time (min)'].fillna(0).astype(int).tolist()
-            else:
-                service_times = [15 for _ in range(len(st.session_state.df))]  # Default 15 minutes
+            if depot_option == "Enter depot coordinates manually":
+                # Add zero service time for depot
+                service_times.append(0)
             
-            # Add zero service time for depot
-            service_times.insert(0, 0)
+            if 'Service Time (min)' in st.session_state.df.columns:
+                service_times.extend(st.session_state.df['Service Time (min)'].fillna(0).astype(int).tolist())
+            else:
+                service_times.extend([15 for _ in range(len(st.session_state.df))])  # Default 15 minutes
             
             # Prepare priorities
             priorities = []
+            if depot_option == "Enter depot coordinates manually":
+                # Add priority for depot
+                priorities.append(0)
+            
             if 'Priority' in st.session_state.df.columns:
                 priority_map = {'High': 3, 'Medium': 2, 'Low': 1}
-                priorities = [priority_map.get(p, 1) for p in st.session_state.df['Priority'].fillna('Low')]
+                priorities.extend([priority_map.get(p, 1) for p in st.session_state.df['Priority'].fillna('Low')])
             else:
-                priorities = [1 for _ in range(len(st.session_state.df))]  # Default priority
+                priorities.extend([1 for _ in range(len(st.session_state.df))])  # Default priority
             
-            # Add priority for depot (not used, but needs to match dimensions)
-            priorities.insert(0, 0)
+            # Verify all arrays have the same length
+            if not (len(locations) == len(time_windows) == len(service_times) == len(priorities)):
+                st.error(f"Data mismatch: {len(locations)} locations, {len(time_windows)} time windows, {len(service_times)} service times, {len(priorities)} priorities")
+                st.stop()
             
             # Set the parameters for the optimizer
             optimizer.set_time_windows(time_windows)
@@ -443,6 +460,8 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
                     st.stop()
             except Exception as e:
                 st.error(f"Optimization error: {e}")
+                import traceback
+                st.code(traceback.format_exc())
                 st.stop()
         
         # Process the solution for display
@@ -451,18 +470,15 @@ if st.button("🧠 Optimize Routes", use_container_width=True):
                 # Generate the map visualization
                 visualizer = MapVisualizer()
                 
-                # Extract locations for the map
-                if depot_option == "Enter depot coordinates manually":
-                    all_locations = [(depot_lat, depot_lon)] + list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
-                else:
-                    all_locations = list(zip(st.session_state.df['Latitude'], st.session_state.df['Longitude']))
+                # Extract locations for the map - use the same locations array
+                all_locations = locations
                 
                 # Generate map with the routes
                 try:
                     folium_map = visualizer.create_route_map(
                         st.session_state.optimized_routes,
                         all_locations,
-                        df=st.session_state.df
+                        df=st.session_state.df if depot_option == "Enter depot coordinates manually" else st.session_state.df[1:]
                     )
                     # Save the map HTML for later use
                     st.session_state.map_html = folium_map._repr_html_()
@@ -701,7 +717,7 @@ if st.session_state.optimized_routes:
             # Generate PDF report
             if st.button("📄 Generate PDF Report", use_container_width=True):
                 try:
-                    from fpdf import FPDF
+                    from fpdf2 import FPDF
                     
                     # Create PDF
                     pdf = FPDF()
@@ -759,7 +775,7 @@ if st.session_state.optimized_routes:
                     
                 except Exception as e:
                     st.error(f"Error generating PDF: {e}")
-                    st.info("Make sure fpdf is installed: pip install fpdf")
+                    st.info("Make sure fpdf2 is installed: pip install fpdf2")
 
 # Add a footer with optimization statistics
 if st.session_state.optimized_routes:
