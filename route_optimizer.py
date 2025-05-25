@@ -86,12 +86,23 @@ class RouteOptimizer:
             time_windows: List of (earliest, latest) time tuples for each location.
         """
         print(f"[DEBUG] Setting time windows for {len(time_windows)} locations")
+        
+        # Verify time windows match number of nodes
+        num_nodes = self.manager.GetNumberOfNodes()
+        if len(time_windows) != num_nodes:
+            print(f"[ERROR] Time windows count ({len(time_windows)}) doesn't match nodes ({num_nodes})")
+            return
+        
         self.time_windows = time_windows
         
         # Register time callback
         def time_callback(from_index, to_index):
             from_node = self.manager.IndexToNode(from_index)
             to_node = self.manager.IndexToNode(to_index)
+            # Bounds checking
+            if from_node >= len(self.duration_matrix) or to_node >= len(self.duration_matrix[0]):
+                print(f"[ERROR] Index out of bounds: from_node={from_node}, to_node={to_node}")
+                return 0
             # Convert to seconds for consistency
             return int(self.duration_matrix[from_node][to_node])
         
@@ -110,8 +121,11 @@ class RouteOptimizer:
             self.time_dimension_added = True
             time_dimension = self.routing.GetDimensionOrDie("Time")
             
-            # Add time window constraints
+            # Add time window constraints with bounds checking
             for location_idx, time_window in enumerate(time_windows):
+                if location_idx >= num_nodes:
+                    print(f"[WARNING] Skipping time window for location {location_idx} (out of bounds)")
+                    continue
                 try:
                     index = self.manager.NodeToIndex(location_idx)
                     # Convert minutes to seconds - ensure valid range
