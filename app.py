@@ -643,7 +643,7 @@ if st.session_state.optimized_routes:
                         route_df = pd.concat([route_df, depot_data], ignore_index=True)
                 
                 # Add each stop in the route
-                cumulative_time = 0  # in minutes
+                cumulative_time = 0.0  # in minutes
                 for i, location_idx in enumerate(route[1:-1], 1):  # Skip depot at start and end
                     stop_idx = location_idx - 1  # Adjust for depot offset
                     stop_data = st.session_state.df.iloc[stop_idx:stop_idx+1].copy()
@@ -656,21 +656,21 @@ if st.session_state.optimized_routes:
                     if i > 1:
                         # Get travel time from previous stop to this stop
                         prev_idx = route[i-1]
-                        travel_time = st.session_state.duration_matrix[prev_idx][location_idx] / 60  # Convert seconds to minutes
+                        travel_time = float(st.session_state.duration_matrix[prev_idx][location_idx]) / 60.0  # Convert seconds to minutes
                         cumulative_time += travel_time
                     
                     # Format as HH:MM
                     start_time = datetime(2023, 1, 1, 8, 0, 0)  # Assume 8:00 AM start
-                    arrival_time = start_time + timedelta(minutes=cumulative_time)
+                    arrival_time = start_time + timedelta(minutes=float(cumulative_time))
                     stop_data['Arrival'] = arrival_time.strftime('%H:%M')
                     
                     # Add service time
-                    service_time = 15  # Default 15 minutes
+                    service_time = 15.0  # Default 15 minutes
                     if 'Service Time (min)' in stop_data.columns:
                         service_time = stop_data['Service Time (min)'].iloc[0]
                     
                     cumulative_time += service_time
-                    departure_time = start_time + timedelta(minutes=cumulative_time)
+                    departure_time = start_time + timedelta(minutes=float(cumulative_time))
                     stop_data['Departure'] = departure_time.strftime('%H:%M')
                     
                     route_df = pd.concat([route_df, stop_data], ignore_index=True)
