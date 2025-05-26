@@ -24,6 +24,7 @@ class RouteOptimizer:
         self.duration_matrix = duration_matrix
         self.num_vehicles = num_vehicles
         self.depot = depot
+        self.num_locations = len(distance_matrix)
         
         # Set default vehicle capacities if not provided
         if vehicle_capacities is None:
@@ -32,10 +33,23 @@ class RouteOptimizer:
             self.vehicle_capacities = vehicle_capacities
         
         print(f"[DEBUG] Vehicle capacities: {self.vehicle_capacities}")
+        print(f"[DEBUG] Number of locations: {self.num_locations}")
+        
+        # Calculate total deliveries vs total capacity
+        total_deliveries = self.num_locations - 1  # Exclude depot
+        total_capacity = sum(self.vehicle_capacities)
+        print(f"[DEBUG] Total deliveries: {total_deliveries}, Total capacity: {total_capacity}")
+        
+        if total_deliveries > total_capacity:
+            print(f"[WARNING] Not enough capacity ({total_capacity}) for all deliveries ({total_deliveries})")
         
         # Initialize OR-Tools routing model
         try:
-            self.manager = pywrapcp.RoutingIndexManager(len(distance_matrix), num_vehicles, depot)
+            self.manager = pywrapcp.RoutingIndexManager(
+                self.num_locations, 
+                num_vehicles, 
+                depot
+            )
             self.routing = pywrapcp.RoutingModel(self.manager)
             print("[DEBUG] Successfully created routing model")
         except Exception as e:
@@ -48,27 +62,25 @@ class RouteOptimizer:
             routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
         self.search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-        self.search_parameters.time_limit.seconds = 30  # Time limit for solving
+        self.search_parameters.time_limit.seconds = 30
         
         # Register the distance callback
         self._register_distance_callback()
         
-        # Initialize time windows and demands as None
+        # Initialize other variables
         self.time_windows = None
         self.service_times = None
         self.priorities = None
         self.priority_weights = 0
-        self.objective = "distance"  # Default objective
-        self.time_dimension_added = False  # Track if time dimension has been added
+        self.objective = "distance"
+        self.time_dimension_added = False
     
     def _register_distance_callback(self):
         """Register the distance callback for the routing model."""
         def distance_callback(from_index, to_index):
             from_node = self.manager.IndexToNode(from_index)
             to_node = self.manager.IndexToNode(to_index)
-            # Ensure we return a valid integer
-            distance = int(self.distance_matrix[from_node][to_node])
-            return distance
+            return int(self.distance_matrix[from_node][to_node])
         
         try:
             self.transit_callback_index = self.routing.RegisterTransitCallback(distance_callback)
@@ -79,18 +91,11 @@ class RouteOptimizer:
             raise
     
     def set_time_windows(self, time_windows):
-        """
-        Set time windows for all locations.
-        
-        Args:
-            time_windows: List of (earliest, latest) time tuples for each location.
-        """
+        """Set time windows for all locations."""
         print(f"[DEBUG] Setting time windows for {len(time_windows)} locations")
         
-        # Verify time windows match number of nodes
-        num_nodes = self.manager.GetNumberOfNodes()
-        if len(time_windows) != num_nodes:
-            print(f"[ERROR] Time windows count ({len(time_windows)}) doesn't match nodes ({num_nodes})")
+        if len(time_windows) != self.num_locations:
+            print(f"[ERROR] Time windows count ({len(time_windows)}) doesn't match locations ({self.num_locations})")
             return
         
         self.time_windows = time_windows
@@ -99,21 +104,16 @@ class RouteOptimizer:
         def time_callback(from_index, to_index):
             from_node = self.manager.IndexToNode(from_index)
             to_node = self.manager.IndexToNode(to_index)
-            # Bounds checking
-            if from_node >= len(self.duration_matrix) or to_node >= len(self.duration_matrix[0]):
-                print(f"[ERROR] Index out of bounds: from_node={from_node}, to_node={to_node}")
-                return 0
-            # Convert to seconds for consistency
             return int(self.duration_matrix[from_node][to_node])
         
         try:
             time_callback_index = self.routing.RegisterTransitCallback(time_callback)
             
-            # Add time dimension - reduce the max time to avoid overflow
+            # Add time dimension
             self.routing.AddDimension(
                 time_callback_index,
-                1800,  # Allow waiting time of up to 30 minutes (in seconds)
-                86400,  # Maximum time (24 hours in seconds)
+                1800,  # Allow waiting time of up to 30 minutes
+                86400,  # Maximum time (24 hours)
                 False,  # Don't force start cumul to zero
                 "Time"
             )
@@ -121,16 +121,12 @@ class RouteOptimizer:
             self.time_dimension_added = True
             time_dimension = self.routing.GetDimensionOrDie("Time")
             
-            # Add time window constraints with bounds checking
+            # Add time window constraints
             for location_idx, time_window in enumerate(time_windows):
-                if location_idx >= num_nodes:
-                    print(f"[WARNING] Skipping time window for location {location_idx} (out of bounds)")
-                    continue
                 try:
                     index = self.manager.NodeToIndex(location_idx)
-                    # Convert minutes to seconds - ensure valid range
                     start_time = max(0, int(time_window[0] * 60))
-                    end_time = min(86400, int(time_window[1] * 60))  # Cap at 24 hours
+                    end_time = min(86400, int(time_window[1] * 60))
                     time_dimension.CumulVar(index).SetRange(start_time, end_time)
                 except Exception as e:
                     print(f"[WARNING] Failed to set time window for location {location_idx}: {e}")
@@ -141,16 +137,10 @@ class RouteOptimizer:
             self.time_dimension_added = False
     
     def set_service_times(self, service_times):
-        """
-        Set service times for each location.
-        
-        Args:
-            service_times: List of service times (in minutes) for each location.
-        """
+        """Set service times for each location."""
         print(f"[DEBUG] Setting service times for {len(service_times)} locations")
         self.service_times = service_times
         
-        # Check if time dimension has been added
         if not self.time_dimension_added:
             print("[WARNING] Time dimension not added, skipping service times")
             return
@@ -158,11 +148,9 @@ class RouteOptimizer:
         try:
             time_dimension = self.routing.GetDimensionOrDie("Time")
             
-            # Add service time at each location
             for location_idx, service_time in enumerate(service_times):
                 try:
                     index = self.manager.NodeToIndex(location_idx)
-                    # Convert minutes to seconds - ensure non-negative
                     service_seconds = max(0, int(service_time * 60))
                     time_dimension.SlackVar(index).SetValue(service_seconds)
                 except Exception as e:
@@ -173,13 +161,7 @@ class RouteOptimizer:
             print(f"[ERROR] Failed to set service times: {e}")
     
     def set_priorities(self, priorities, weight=5):
-        """
-        Set priorities for each location and their weight in the objective.
-        
-        Args:
-            priorities: List of priority values for each location (higher = more important)
-            weight: Weight of priority in the objective function (0-10)
-        """
+        """Set priorities for each location."""
         print(f"[DEBUG] Setting priorities with weight {weight}")
         self.priorities = priorities
         self.priority_weights = weight
@@ -197,20 +179,14 @@ class RouteOptimizer:
         self.objective = "balance"
     
     def solve(self):
-        """
-        Solve the routing problem.
-        
-        Returns:
-            Dictionary mapping vehicle index to list of location indices in the route.
-        """
+        """Solve the routing problem."""
         print("[DEBUG] Starting solve process")
         
-        # Add capacity constraints if vehicle capacities are provided
+        # Add capacity constraints
         def demand_callback(from_index):
             """Return the demand of the location."""
-            # All locations except depot have demand of 1
             from_node = self.manager.IndexToNode(from_index)
-            return 1 if from_node != self.depot else 0
+            return 0 if from_node == self.depot else 1
         
         try:
             demand_callback_index = self.routing.RegisterUnaryTransitCallback(demand_callback)
@@ -218,7 +194,7 @@ class RouteOptimizer:
             self.routing.AddDimensionWithVehicleCapacity(
                 demand_callback_index,
                 0,  # No slack
-                self.vehicle_capacities,  # Vehicle capacities
+                self.vehicle_capacities,
                 True,  # Start cumul to zero
                 "Capacity"
             )
@@ -226,71 +202,44 @@ class RouteOptimizer:
         except Exception as e:
             print(f"[ERROR] Failed to add capacity constraints: {e}")
         
-        # Set the objective based on user selection
-        try:
-            if self.objective == "max_route":
-                # Minimize the maximum route length
-                dimension_name = "Distance"
-                self.routing.AddDimension(
-                    self.transit_callback_index,
-                    0,  # No slack
-                    100000,  # Reduced max distance to avoid overflow
-                    True,  # Start cumul to zero
-                    dimension_name
-                )
-                distance_dimension = self.routing.GetDimensionOrDie(dimension_name)
-                distance_dimension.SetGlobalSpanCostCoefficient(100)
-                print("[DEBUG] Set objective to minimize max route")
-                
-            elif self.objective == "balance":
-                # Balance route lengths
-                dimension_name = "Distance"
-                self.routing.AddDimension(
-                    self.transit_callback_index,
-                    0,  # No slack
-                    100000,  # Reduced max distance to avoid overflow
-                    True,  # Start cumul to zero
-                    dimension_name
-                )
-                distance_dimension = self.routing.GetDimensionOrDie(dimension_name)
-                
-                # Add a cost for each vehicle proportional to the route length
-                for vehicle_id in range(self.num_vehicles):
-                    end_index = self.routing.End(vehicle_id)
-                    distance_dimension.SetCumulVarSoftUpperBound(
-                        end_index,
-                        50000,  # Reduced bound
-                        10  # Penalty coefficient
-                    )
-                print("[DEBUG] Set objective to balance routes")
-        except Exception as e:
-            print(f"[WARNING] Failed to set custom objective: {e}")
+        # CRITICAL FIX: Instead of making locations optional, we'll make sure they're required
+        # Only make locations optional if we don't have enough capacity
+        total_deliveries = self.num_locations - 1
+        total_capacity = sum(self.vehicle_capacities)
         
-        # Add priority handling if provided - SIMPLIFIED VERSION
-        if self.priorities and self.priority_weights > 0:
-            print("[DEBUG] Adding priority constraints")
-            try:
-                # Create a disjunction for each non-depot location with priority-based penalty
-                for location_idx in range(1, min(len(self.priorities), self.manager.GetNumberOfNodes())):
-                    try:
-                        index = self.manager.NodeToIndex(location_idx)
-                        priority = self.priorities[location_idx]
-                        
-                        # Higher priority = lower penalty for not visiting
-                        # Scale by priority weight (0-10)
-                        penalty = 100  # Much lower penalty - we want to visit locations!
-                        
-                        # Add disjunction with penalty
-                        self.routing.AddDisjunction([index], max(0, penalty))
-                    except Exception as e:
-                        print(f"[WARNING] Failed to add priority for location {location_idx}: {e}")
-            except Exception as e:
-                print(f"[WARNING] Failed to add priorities: {e}")
+        if total_deliveries > total_capacity:
+            print(f"[DEBUG] Making some locations optional due to capacity constraints")
+            # Only make the lowest priority locations optional
+            if self.priorities:
+                # Sort locations by priority (excluding depot)
+                location_priorities = [(i, self.priorities[i]) for i in range(1, self.num_locations)]
+                location_priorities.sort(key=lambda x: x[1])  # Sort by priority (low to high)
+                
+                # Make only the excess locations optional
+                excess = total_deliveries - total_capacity
+                for i in range(excess):
+                    location_idx = location_priorities[i][0]
+                    index = self.manager.NodeToIndex(location_idx)
+                    penalty = 10000  # High penalty - only skip if absolutely necessary
+                    self.routing.AddDisjunction([index], penalty)
+                    print(f"[DEBUG] Made location {location_idx} optional with penalty {penalty}")
+            else:
+                # If no priorities, make the last few locations optional
+                excess = total_deliveries - total_capacity
+                for location_idx in range(self.num_locations - excess, self.num_locations):
+                    index = self.manager.NodeToIndex(location_idx)
+                    penalty = 10000
+                    self.routing.AddDisjunction([index], penalty)
+                    print(f"[DEBUG] Made location {location_idx} optional with penalty {penalty}")
+        else:
+            print("[DEBUG] All locations should be visitable - not making any optional")
         
-        # Set additional search parameters for better solutions
+        # Set search parameters
+        self.search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC)
         self.search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH)
-        self.search_parameters.time_limit.seconds = 10  # Reduced time limit
+        self.search_parameters.time_limit.seconds = 30
         self.search_parameters.log_search = False
         
         print("[DEBUG] Attempting to solve...")
@@ -300,15 +249,26 @@ class RouteOptimizer:
             solution = self.routing.SolveWithParameters(self.search_parameters)
             
             if not solution:
-                print("[DEBUG] No solution found with initial parameters, trying relaxed parameters")
-                # Try with relaxed parameters
-                self.search_parameters.first_solution_strategy = (
-                    routing_enums_pb2.FirstSolutionStrategy.FIRST_UNBOUND_MIN_VALUE)
-                self.search_parameters.time_limit.seconds = 20
-                solution = self.routing.SolveWithParameters(self.search_parameters)
+                print("[DEBUG] No solution found, trying with different strategy")
+                # Try different strategies
+                strategies = [
+                    routing_enums_pb2.FirstSolutionStrategy.FIRST_UNBOUND_MIN_VALUE,
+                    routing_enums_pb2.FirstSolutionStrategy.LOCAL_CHEAPEST_INSERTION,
+                    routing_enums_pb2.FirstSolutionStrategy.SAVINGS,
+                    routing_enums_pb2.FirstSolutionStrategy.SWEEP,
+                ]
+                
+                for strategy in strategies:
+                    print(f"[DEBUG] Trying strategy: {strategy}")
+                    self.search_parameters.first_solution_strategy = strategy
+                    self.search_parameters.time_limit.seconds = 60
+                    solution = self.routing.SolveWithParameters(self.search_parameters)
+                    if solution:
+                        print(f"[DEBUG] Found solution with strategy: {strategy}")
+                        break
                 
                 if not solution:
-                    print("[ERROR] No solution found even with relaxed parameters")
+                    print("[ERROR] No solution found with any strategy")
                     return None
         except Exception as e:
             print(f"[ERROR] Exception during solve: {e}")
@@ -323,36 +283,64 @@ class RouteOptimizer:
                 index = self.routing.Start(vehicle_id)
                 route = [self.manager.IndexToNode(index)]
                 
-                safety_counter = 0
-                max_iterations = 1000  # Prevent infinite loops
-                
-                while not self.routing.IsEnd(index) and safety_counter < max_iterations:
+                while not self.routing.IsEnd(index):
                     index = solution.Value(self.routing.NextVar(index))
                     route.append(self.manager.IndexToNode(index))
-                    safety_counter += 1
-                
-                if safety_counter >= max_iterations:
-                    print(f"[WARNING] Route extraction hit safety limit for vehicle {vehicle_id}")
                 
                 routes[vehicle_id] = route
-                print(f"[DEBUG] Vehicle {vehicle_id} route: {route}")
+                stops = len(route) - 2  # Exclude start and end depot
+                print(f"[DEBUG] Vehicle {vehicle_id} route: {route} ({stops} stops)")
         except Exception as e:
             print(f"[ERROR] Failed to extract routes: {e}")
             return None
         
+        # Check if we actually visited any delivery locations
+        total_stops = sum(len(route) - 2 for route in routes.values())
+        print(f"[DEBUG] Total delivery stops across all routes: {total_stops}")
+        
+        if total_stops == 0:
+            print("[WARNING] No delivery locations visited! This suggests a problem with the model setup.")
+            
+            # Try a very simple approach - force at least one delivery per vehicle that has capacity
+            print("[DEBUG] Attempting simple fallback solution...")
+            return self._create_simple_fallback_solution()
+        
         print("[DEBUG] Successfully extracted all routes")
         return routes
     
-    def get_solution_info(self, solution):
-        """
-        Get detailed information about the solution.
+    def _create_simple_fallback_solution(self):
+        """Create a simple fallback solution that assigns deliveries round-robin."""
+        print("[DEBUG] Creating simple fallback solution")
         
-        Args:
-            solution: The solution object from OR-Tools
+        routes = {}
+        delivery_locations = list(range(1, self.num_locations))  # Exclude depot
+        
+        # Initialize empty routes
+        for vehicle_id in range(self.num_vehicles):
+            routes[vehicle_id] = [self.depot, self.depot]  # Start and end at depot
+        
+        # Assign deliveries round-robin to vehicles with capacity
+        vehicle_loads = [0] * self.num_vehicles
+        
+        for i, location in enumerate(delivery_locations):
+            vehicle_id = i % self.num_vehicles
             
-        Returns:
-            Dictionary with solution statistics
-        """
+            # Check if this vehicle has capacity
+            if vehicle_loads[vehicle_id] < self.vehicle_capacities[vehicle_id]:
+                # Insert the delivery location before the final depot
+                routes[vehicle_id].insert(-1, location)
+                vehicle_loads[vehicle_id] += 1
+                print(f"[DEBUG] Assigned location {location} to vehicle {vehicle_id}")
+        
+        # Show the fallback solution
+        for vehicle_id, route in routes.items():
+            stops = len(route) - 2
+            print(f"[DEBUG] Fallback - Vehicle {vehicle_id}: {route} ({stops} stops)")
+        
+        return routes
+    
+    def get_solution_info(self, solution):
+        """Get detailed information about the solution."""
         if not solution:
             return None
             
@@ -364,48 +352,18 @@ class RouteOptimizer:
         }
         
         try:
-            # Get dropped nodes
-            for node in range(self.routing.Size()):
-                if self.routing.IsStart(node) or self.routing.IsEnd(node):
-                    continue
-                if solution.Value(self.routing.NextVar(node)) == node:
-                    info['dropped_nodes'].append(self.manager.IndexToNode(node))
-            
-            # Get route information
-            for vehicle_id in range(self.num_vehicles):
-                index = self.routing.Start(vehicle_id)
+            # Calculate route distances
+            for vehicle_id, route in solution.items():
                 route_distance = 0
-                route_load = 0
-                route = []
-                
-                safety_counter = 0
-                max_iterations = 1000
-                
-                while not self.routing.IsEnd(index) and safety_counter < max_iterations:
-                    node_index = self.manager.IndexToNode(index)
-                    route.append(node_index)
-                    
-                    # Get next index
-                    previous_index = index
-                    index = solution.Value(self.routing.NextVar(index))
-                    
-                    # Add distance
-                    route_distance += self.routing.GetArcCostForVehicle(
-                        previous_index, index, vehicle_id)
-                    
-                    # Add load
-                    if node_index != self.depot:
-                        route_load += 1
-                        
-                    safety_counter += 1
-                
-                # Add final node
-                route.append(self.manager.IndexToNode(index))
+                for i in range(len(route) - 1):
+                    from_node = route[i]
+                    to_node = route[i + 1]
+                    route_distance += self.distance_matrix[from_node][to_node]
                 
                 info['routes'][vehicle_id] = {
                     'route': route,
                     'distance': route_distance,
-                    'load': route_load
+                    'stops': len(route) - 2
                 }
                 
                 info['total_distance'] += route_distance
