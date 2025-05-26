@@ -278,7 +278,7 @@ class RouteOptimizer:
                         
                         # Higher priority = lower penalty for not visiting
                         # Scale by priority weight (0-10)
-                        penalty = int(1000 * (4 - priority) * self.priority_weights / 10)
+                        penalty = 100  # Much lower penalty - we want to visit locations!
                         
                         # Add disjunction with penalty
                         self.routing.AddDisjunction([index], max(0, penalty))
