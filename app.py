@@ -14,7 +14,28 @@ import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import base64
 from PIL import Image
-from fpdf2 import FPDF  # Changed from fpdf to fpdf2
+
+# Safe PDF import with fallback
+PDF_AVAILABLE = False
+try:
+    from fpdf2 import FPDF
+    PDF_AVAILABLE = True
+    PDF_VERSION = "fpdf2"
+except ImportError:
+    try:
+        from fpdf import FPDF
+        PDF_AVAILABLE = True
+        PDF_VERSION = "fpdf"
+    except ImportError:
+        PDF_AVAILABLE = False
+        # Create dummy FPDF class to prevent crashes
+        class FPDF:
+            def __init__(self, *args, **kwargs): pass
+            def add_page(self): pass
+            def set_font(self, *args, **kwargs): pass
+            def cell(self, *args, **kwargs): pass
+            def ln(self, *args): pass
+            def output(self, *args, **kwargs): return b""
 
 # Import custom modules
 from route_optimizer import RouteOptimizer
@@ -118,9 +139,77 @@ def generate_csv_template():
     
     return pd.DataFrame(template_data)
 
+def generate_pdf_report():
+    """Generate PDF report with better error handling."""
+    if not PDF_AVAILABLE:
+        st.error("PDF generation not available. Install fpdf2 with: pip install fpdf2")
+        return None
+    
+    try:
+        # Create PDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_font("Arial", size=16)
+        pdf.cell(0, 10, "Route Optimization Report", ln=True, align='C')
+        pdf.ln(5)
+        
+        # Add generation date
+        pdf.set_font("Arial", size=10)
+        pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+        pdf.ln(5)
+        
+        # Add summary
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Summary", ln=True)
+        pdf.set_font("Arial", size=10)
+        
+        total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+        active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
+        
+        pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
+        pdf.cell(0, 8, f"Active Vehicles: {active_vehicles}", ln=True)
+        pdf.ln(5)
+        
+        # Add routes
+        pdf.set_font("Arial", 'B', 12)
+        pdf.cell(0, 10, "Route Details", ln=True)
+        pdf.set_font("Arial", size=10)
+        
+        for vehicle_id, route in st.session_state.optimized_routes.items():
+            if len(route) <= 2:
+                continue
+            
+            pdf.ln(3)
+            pdf.set_font("Arial", 'B', 11)
+            pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
+            pdf.set_font("Arial", size=9)
+            
+            for i, location_idx in enumerate(route[1:-1], 1):
+                stop_idx = location_idx - 1
+                row = st.session_state.df.iloc[stop_idx]
+                pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
+        
+        # Output PDF based on version
+        if PDF_VERSION == "fpdf2":
+            pdf_output = pdf.output()
+        else:  # legacy fpdf
+            pdf_output = pdf.output(dest='S').encode('latin1')
+        
+        return pdf_output
+        
+    except Exception as e:
+        st.error(f"Error generating PDF: {e}")
+        return None
+
 # Set up the page header and information
 st.title("🚚 Final Mile AI Planner")
 st.caption("🧠 Route optimization using OR-Tools (AI and GraphHopper features temporarily disabled)")
+
+# Show PDF status
+if PDF_AVAILABLE:
+    st.success(f"✅ PDF export available (using {PDF_VERSION})")
+else:
+    st.warning("⚠️ PDF export disabled - install fpdf2 with: pip install fpdf2")
 
 # Create sidebar for settings and configurations
 with st.sidebar:
@@ -311,7 +400,7 @@ with col2:
         help="Select the main optimization objective"
     )
 
-# Additional constraints text area - FIXED EMPTY LABEL
+# Additional constraints text area
 st.write("Additional Constraints (Free Text for AI Context)")
 additional_constraints = st.text_area(
     "Enter additional constraints",
@@ -716,66 +805,17 @@ if st.session_state.optimized_routes:
         with col2:
             # Generate PDF report
             if st.button("📄 Generate PDF Report", use_container_width=True):
-                try:
-                    from fpdf2 import FPDF
-                    
-                    # Create PDF
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_font("Arial", size=16)
-                    pdf.cell(0, 10, "Route Optimization Report", ln=True, align='C')
-                    pdf.ln(5)
-                    
-                    # Add generation date
-                    pdf.set_font("Arial", size=10)
-                    pdf.cell(0, 10, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add summary
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Summary", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    total_stops = sum(len(route) - 2 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    active_vehicles = sum(1 for route in st.session_state.optimized_routes.values() if len(route) > 2)
-                    
-                    pdf.cell(0, 8, f"Total Deliveries: {total_stops}", ln=True)
-                    pdf.cell(0, 8, f"Active Vehicles: {active_vehicles} out of {num_vehicles}", ln=True)
-                    pdf.cell(0, 8, f"Optimization Objective: {optimize_for}", ln=True)
-                    pdf.ln(5)
-                    
-                    # Add routes
-                    pdf.set_font("Arial", 'B', 12)
-                    pdf.cell(0, 10, "Route Details", ln=True)
-                    pdf.set_font("Arial", size=10)
-                    
-                    for vehicle_id, route in st.session_state.optimized_routes.items():
-                        if len(route) <= 2:
-                            continue
-                        
-                        pdf.ln(3)
-                        pdf.set_font("Arial", 'B', 11)
-                        pdf.cell(0, 8, f"Vehicle {vehicle_id + 1}", ln=True)
-                        pdf.set_font("Arial", size=9)
-                        
-                        for i, location_idx in enumerate(route[1:-1], 1):
-                            stop_idx = location_idx - 1
-                            row = st.session_state.df.iloc[stop_idx]
-                            pdf.cell(0, 6, f"  Stop {i}: {row['Name']} - {row.get('Address', 'N/A')}", ln=True)
-                    
-                    # Output PDF
-                    pdf_output = pdf.output(dest='S').encode('latin1')
-                    
-                    st.download_button(
-                        label="💾 Download PDF Report",
-                        data=pdf_output,
-                        file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
-                        mime="application/pdf"
-                    )
-                    
-                except Exception as e:
-                    st.error(f"Error generating PDF: {e}")
-                    st.info("Make sure fpdf2 is installed: pip install fpdf2")
+                if PDF_AVAILABLE:
+                    pdf_data = generate_pdf_report()
+                    if pdf_data:
+                        st.download_button(
+                            label="💾 Download PDF Report",
+                            data=pdf_data,
+                            file_name=f"route_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf",
+                            mime="application/pdf"
+                        )
+                else:
+                    st.error("PDF generation not available. Install fpdf2 with: pip install fpdf2")
 
 # Add a footer with optimization statistics
 if st.session_state.optimized_routes:
